@@ -1,0 +1,30 @@
+{
+    "load": true,
+    "load_path": "model.pth",
+    "save_path": "model",
+    "seed": 0,
+    "sizes": {
+        "history": 1,
+        "x": 5,
+        "y": 2,
+        "z": 4
+    },
+    "cnp_encoder": {
+        "inner_activation": "GELU",
+        "layers": [
+            64,
+            128,
+            128,
+            64
+        ]
+    },
+    "cnp_decoder": {
+        "inner_activation": "Sigmoid",
+        "mu_activation": "None",
+        "sigma_activation": "Softplus",
+        "layers": [
+            32,
+            32
+        ]
+    }
+}

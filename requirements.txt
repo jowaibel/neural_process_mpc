@@ -1,0 +1,7 @@
+# Tested with Python 3.12.
+torch==2.5.1
+casadi==3.7.0
+numpy==2.2.4
+scipy==1.15.2
+matplotlib==3.10.0
+pandas==2.3.3
