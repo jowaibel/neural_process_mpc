@@ -1,0 +1,178 @@
+"""TCP server wrapping QubeSimulator for the C++ MPC client
+(src_cpp/tests/run_furuta_np_mpc_client.cpp).
+
+The simulator itself (QubeSimulator's own background process) always keeps
+running at its own real-time rate, applying whatever torque setpoint was
+last set -- with no client connected, that's just the last (or default
+zero) value, so it "emulates the real world" regardless of whether an MPC
+client is attached.
+
+On top of that, this server accepts a single client connection and, for its
+duration: pushes the current state at a fixed cadence (`dt` from the MPC
+config) as length-prefixed JSON `{"t": <time>, "x": [...]}`, and applies
+whatever `{"u": [...]}` messages it receives to the simulator's torque
+setpoint as soon as they arrive.
+
+Wire format: each message is a 4-byte big-endian length prefix followed by
+that many bytes of UTF-8 JSON.
+
+If `--dump` is given (or, absent that, if the MPC config's `save` is true),
+each client session's closed-loop log (t, x, u -- one row per state sample
+sent, tagged with whichever torque command was most recently applied) is
+written to `<dump>.npz` under model/ when that client disconnects,
+overwriting any previous session's dump. `--dump` defaults to the MPC
+config's `save_path`.
+"""
+import argparse
+import json
+import socket
+import struct
+import sys
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / 'src'))
+
+from npmpc.hardware import create_hardware
+
+
+def send_msg(conn, obj: dict) -> None:
+    payload = json.dumps(obj).encode('utf-8')
+    conn.sendall(struct.pack('>I', len(payload)) + payload)
+
+
+def recv_exact(conn, n: int):
+    buf = b''
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def recv_msg(conn):
+    header = recv_exact(conn, 4)
+    if header is None:
+        return None
+    (length,) = struct.unpack('>I', header)
+    payload = recv_exact(conn, length)
+    if payload is None:
+        return None
+    return json.loads(payload.decode('utf-8'))
+
+
+class ClosedLoopLog:
+    """Shared, single-writer-per-field log: sender_loop appends rows,
+    receiver_loop only updates `last_u` (a single float assignment is atomic
+    under the GIL, so no lock is needed between the two threads)."""
+
+    def __init__(self):
+        self.last_u = 0.0
+        self.t = []
+        self.x = []
+        self.u = []
+
+    def record(self, t: float, x: list) -> None:
+        self.t.append(t)
+        self.x.append(x)
+        self.u.append(self.last_u)
+
+    def save(self, path: Path, dt: float) -> None:
+        if not self.t:
+            return
+        np.savez(path,
+                  t=np.array(self.t), x=np.array(self.x), u=np.array(self.u),
+                  dt=dt)
+        print(f'Saved closed-loop log to {path} ({len(self.t)} steps)')
+
+
+def sender_loop(conn, qube, dt: float, stop_event: threading.Event, log: ClosedLoopLog = None) -> None:
+    while not stop_event.is_set():
+        state = qube.get_state().tolist()
+        t = time.time()
+        if log is not None:
+            log.record(t, state)
+        try:
+            send_msg(conn, {'t': t, 'x': state})
+        except OSError:
+            stop_event.set()
+            return
+        time.sleep(dt)
+
+
+def receiver_loop(conn, qube, stop_event: threading.Event, log: ClosedLoopLog = None) -> None:
+    while not stop_event.is_set():
+        try:
+            msg = recv_msg(conn)
+        except OSError:
+            stop_event.set()
+            return
+        if msg is None:
+            stop_event.set()
+            return
+        u = msg.get('u')
+        if u:
+            qube.set_torque_setpoint(float(u[0]))
+            if log is not None:
+                log.last_u = float(u[0])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mpc-config', default=str(PROJECT_ROOT / 'model/furuta_mpc.json'))
+    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=56123)
+    parser.add_argument('--dump', default=None,
+                        help='Path prefix (bare filename resolved under model/) to dump each client '
+                             'session\'s closed-loop log to, as "<dump>.npz". Defaults to the MPC '
+                             'config\'s save_path if its save flag is true, else no dump.')
+    args = parser.parse_args()
+
+    # furuta_mpc.json is the same source scripts/export_mpc_config.py reads
+    # dt/p from when it writes model/mpc_config.yaml for the C++ side, so
+    # the two sides can't drift apart on dt.
+    furuta_mpc = json.loads(Path(args.mpc_config).read_text())
+    dt = furuta_mpc['dt']
+    qube = create_hardware({'target': 'sim', 'p': furuta_mpc['p']})
+
+    dump_prefix = args.dump
+    if dump_prefix is None and furuta_mpc.get('save', False):
+        dump_prefix = furuta_mpc['save_path']
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((args.host, args.port))
+    server.listen(1)
+    print(f'Qube server listening on {args.host}:{args.port} (dt={dt}s)')
+
+    try:
+        while True:
+            conn, addr = server.accept()
+            print(f'Client connected: {addr}')
+            stop_event = threading.Event()
+            log = ClosedLoopLog() if dump_prefix else None
+            t_send = threading.Thread(target=sender_loop, args=(conn, qube, dt, stop_event, log), daemon=True)
+            t_recv = threading.Thread(target=receiver_loop, args=(conn, qube, stop_event, log), daemon=True)
+            t_send.start()
+            t_recv.start()
+            t_recv.join()
+            t_send.join()
+            conn.close()
+            print('Client disconnected; simulator keeps running with the last input.')
+            if log is not None:
+                dump_path = PROJECT_ROOT / 'model' / f'{dump_prefix}.npz'
+                log.save(dump_path, dt)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        qube.terminate()
+        server.close()
+
+
+if __name__ == '__main__':
+    main()

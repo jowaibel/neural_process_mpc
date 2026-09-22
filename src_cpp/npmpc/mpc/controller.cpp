@@ -47,22 +47,33 @@ void MPCController::buildOptimization() {
 }
 
 void MPCController::warmStart(const casadi::DM& x0) {
-    const int N = params_.horizonSteps;
+    problem_.set_value(x0Param_, x0);
 
-    casadi::DM uInit = casadi::DM::zeros(N, params_.uSize);
-    // Upright equilibrium target, hardcoded as in Python's warm_start().
-    casadi::DM target = casadi::DM({2.0 * M_PI, 0.0, 0.0, 0.0}).T();
-
-    casadi::DM xInit = casadi::DM::zeros(N + 1, params_.xSize);
-    for (casadi_int i = 0; i <= N; ++i) {
-        double t = static_cast<double>(i) / static_cast<double>(N);
-        xInit(i, casadi::Slice()) = x0 + t * (target - x0);
+    if (lastX_.is_empty()) {
+        // Cold start: linearly interpolate x toward the upright
+        // equilibrium, zero u -- as in Python's warm_start().
+        const int N = params_.horizonSteps;
+        casadi::DM uInit = casadi::DM::zeros(N, params_.uSize);
+        casadi::DM target = casadi::DM({2.0 * M_PI, 0.0, 0.0, 0.0}).T();
+        casadi::DM xInit = casadi::DM::zeros(N + 1, params_.xSize);
+        for (casadi_int i = 0; i <= N; ++i) {
+            double t = static_cast<double>(i) / static_cast<double>(N);
+            xInit(i, casadi::Slice()) = x0 + t * (target - x0);
+        }
+        problem_.set_initial(x_, xInit);
+        problem_.set_initial(u_, uInit);
+    } else {
+        // Warm start from the previous solution, reused as-is (no
+        // shifting/delay compensation).
+        problem_.set_initial(x_, lastX_);
+        problem_.set_initial(u_, lastU_);
+        problem_.set_initial(problem_.lam_g(), lastLamG_);
     }
 
-    problem_.set_value(x0Param_, x0);
-    problem_.set_initial(x_, xInit);
-    problem_.set_initial(u_, uInit);
+    solveWithRetry();
+}
 
+void MPCController::solveWithRetry() {
     bool solved = false;
     for (int attempt = 0; attempt < 100 && !solved; ++attempt) {
         try {

@@ -19,9 +19,12 @@ class MPCController {
 public:
     MPCController(problem::MPCBase& mpc, problem::MPCParams params);
 
-    // Solves once from a cold start (linear interpolation toward the
-    // upright equilibrium), retrying with the last iterate on failure, as
-    // in Python's warm_start().
+    // Solves for a new x0. On the first call, cold-starts (linear
+    // interpolation toward the upright equilibrium, zero u) as in Python's
+    // warm_start(); on later calls, reuses the previous solution as the
+    // initial guess (no shifting/delay compensation -- TODO: port
+    // SolutionBuffer's shift + delay-compensation logic). Either way,
+    // retries with the last iterate on solve failure, as in Python.
     void warmStart(const casadi::DM& x0);
 
     [[noreturn]] void runController();
@@ -32,6 +35,7 @@ public:
 
 private:
     void buildOptimization();
+    void solveWithRetry();
 
     problem::MPCBase& mpc_;
     problem::MPCParams params_;
