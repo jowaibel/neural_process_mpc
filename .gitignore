@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.eggs/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# Generated artifacts
+# simulator recording (written at runtime)
+qube_servo2.npy
+# dataset produced by create_dataset.sh
+datasets/furuta/
+# saved MPC runs and demo trajectory plots
+plots/*.npz
+plots/mpc_trajectory_*.png
+
+# OS / editor
+.DS_Store
