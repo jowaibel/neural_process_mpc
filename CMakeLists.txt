@@ -19,6 +19,7 @@ add_library(npmpc
     src_cpp/npmpc/nps/FurutaNPEigen.cpp
     src_cpp/npmpc/mpc/problem/MPCBase.cpp
     src_cpp/npmpc/mpc/problem/furuta_cost.cpp
+    src_cpp/npmpc/mpc/problem/furuta_cost_eigen.cpp
     src_cpp/npmpc/mpc/problem/FurutaNPMPC.cpp
     src_cpp/npmpc/mpc/solver.cpp
     src_cpp/npmpc/mpc/controller.cpp
@@ -35,6 +36,10 @@ target_compile_definitions(eval_furuta_np PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SO
 add_executable(eval_furuta_np_eigen src_cpp/tests/eval_furuta_np_eigen.cpp)
 target_link_libraries(eval_furuta_np_eigen PRIVATE npmpc)
 target_compile_definitions(eval_furuta_np_eigen PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+add_executable(eval_furuta_cost_eigen src_cpp/tests/eval_furuta_cost_eigen.cpp)
+target_link_libraries(eval_furuta_cost_eigen PRIVATE npmpc)
+target_compile_definitions(eval_furuta_cost_eigen PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_executable(eval_furuta_mpc src_cpp/tests/eval_furuta_mpc.cpp)
 target_link_libraries(eval_furuta_mpc PRIVATE npmpc)
