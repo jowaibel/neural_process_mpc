@@ -4,7 +4,10 @@ project(np_mpc_public CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
 find_package(laopt REQUIRED)
+find_package(Ipopt REQUIRED)
 find_package(casadi REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -19,7 +22,6 @@ add_library(npmpc
     src_cpp/npmpc/nps/FurutaNPEigen.cpp
     src_cpp/npmpc/mpc/problem/MPCBase.cpp
     src_cpp/npmpc/mpc/problem/furuta_cost.cpp
-    src_cpp/npmpc/mpc/problem/furuta_cost_eigen.cpp
     src_cpp/npmpc/mpc/problem/FurutaNPMPC.cpp
     src_cpp/npmpc/mpc/solver.cpp
     src_cpp/npmpc/mpc/controller.cpp
@@ -37,9 +39,12 @@ add_executable(eval_furuta_np_eigen src_cpp/tests/eval_furuta_np_eigen.cpp)
 target_link_libraries(eval_furuta_np_eigen PRIVATE npmpc)
 target_compile_definitions(eval_furuta_np_eigen PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
-add_executable(eval_furuta_cost_eigen src_cpp/tests/eval_furuta_cost_eigen.cpp)
-target_link_libraries(eval_furuta_cost_eigen PRIVATE npmpc)
-target_compile_definitions(eval_furuta_cost_eigen PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+# laopt + IPOPT NP MPC (the installed laopt package has no laopt_target_enable_ipopt,
+# so IPOPT is wired in here via cmake/FindIpopt.cmake).
+add_executable(eval_furuta_np_laopt src_cpp/tests/eval_furuta_np_laopt.cpp)
+target_link_libraries(eval_furuta_np_laopt PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES})
+target_include_directories(eval_furuta_np_laopt PRIVATE ${Ipopt_INCLUDE_DIRS})
+target_compile_definitions(eval_furuta_np_laopt PRIVATE LAOPT_WITH_IPOPT NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_executable(eval_furuta_mpc src_cpp/tests/eval_furuta_mpc.cpp)
 target_link_libraries(eval_furuta_mpc PRIVATE npmpc)
