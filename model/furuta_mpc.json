@@ -90,6 +90,6 @@
         ],
         "sim_steps": 50
     },
-    "save": false,
-    "save_path": "experiment_np_m3"
+    "save": true,
+    "save_path": "experiment_np_mpc_cpp"
 }
