@@ -91,5 +91,5 @@
         "sim_steps": 50
     },
     "save": true,
-    "save_path": "experiment_np_mpc_cpp"
+    "save_path": "experiment_np_mpc_py_casadi"
 }

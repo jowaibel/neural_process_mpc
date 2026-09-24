@@ -5,7 +5,11 @@ Each dump is an .npz with:
   t   (n,)   wall-clock timestamps of each state sample
   x   (n,4)  measured state [theta, phi, theta_dot, phi_dot]
   u   (n,1)  torque applied at (i.e. most recently set before) each sample
-  dt  ()     nominal control period
+  dt  ()     nominal control period (MPC model step)
+and, in newer dumps:
+  solve_t  (m,)  wall-clock arrival time of each input that reported a solve time
+  solve_ms (m,)  MPC computation time of that solve (ms), plotted lower right
+  state_period, sim_period ()  state-stream and simulator integration periods (s)
 """
 import argparse
 import numpy as np
@@ -38,7 +42,22 @@ def main():
     ax_u.set_xlabel('Time (s)')
     ax_u.grid(True, lw=0.3)
 
-    axes[2, 1].axis('off')
+    ax_c = axes[2, 1]
+    if 'solve_ms' in d.files and d['solve_ms'].size > 0:
+        t_solve = d['solve_t'] - d['t'][0]
+        solve_ms = d['solve_ms']
+        ax_c.plot(t_solve, solve_ms, c='C2', lw=0.8, marker='.', ms=3,
+                  label=f'mean {solve_ms.mean():.2f} ms, max {solve_ms.max():.2f} ms')
+        if 'state_period' in d.files:
+            ax_c.axhline(1e3 * float(d['state_period']), c='k', ls='--', lw=0.8,
+                         label=f'state period {1e3 * float(d["state_period"]):g} ms')
+        ax_c.set_ylim(bottom=0)
+        ax_c.set_ylabel('MPC computation time (ms)')
+        ax_c.set_xlabel('Time (s)')
+        ax_c.grid(True, lw=0.3)
+        ax_c.legend(loc='upper right', fontsize=8)
+    else:
+        ax_c.axis('off')  # older dumps without solve times
 
     fig.suptitle(f'{args.path} -- C++ NP-MPC closed loop')
     fig.tight_layout()

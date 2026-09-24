@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,8 +30,18 @@ public:
     // was closed by the server.
     bool receiveState(QubeState& state);
 
-    // Sends the first optimal input as {"u": [...]}.
-    void sendInput(const std::vector<double>& u);
+    // Blocks until a state message arrives, then also reads every further
+    // message already queued in the socket, keeping only the newest. The
+    // server streams states at its own cadence, so without this a client
+    // slower than that cadence would work on ever older states. `skipped`
+    // (optional) receives the number of discarded older states. Returns false
+    // if the connection was closed by the server.
+    bool receiveLatestState(QubeState& state, int* skipped = nullptr);
+
+    // Sends the first optimal input as {"u": [...]}, or as
+    // {"u": [...], "solve_ms": <ms>} if the MPC solve time is given (logged by
+    // the server alongside the closed-loop trajectory).
+    void sendInput(const std::vector<double>& u, std::optional<double> solveMs = std::nullopt);
 
 private:
     int socketFd_;

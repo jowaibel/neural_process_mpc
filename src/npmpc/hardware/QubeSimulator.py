@@ -18,8 +18,13 @@ class QubeSimulator(QubeBase):
     current_torque: float
     samples = 100
 
-    def __init__(self, pendulum_type: str = 'furuta', p: torch.Tensor = None, save_name: str = None):
+    def __init__(self, pendulum_type: str = 'furuta', p: torch.Tensor = None, save_name: str = None,
+                 frequency: float = None):
         super().__init__(pendulum_type, p, save_name)
+        # Integration rate of the simulation loop [Hz]; defaults to QubeBase.frequency.
+        # Must be set before the child process is started (it gets a copy of self).
+        if frequency is not None:
+            self.frequency = frequency
         DynamicsClass = DYNAMICS_REGISTRY[self.pendulum_type]
         IntegratorClass = INTEGRATOR_REGISTRY.get('midpoint')
         self.integrator = IntegratorClass(DynamicsClass)

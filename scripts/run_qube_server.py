@@ -2,23 +2,28 @@
 (src_cpp/tests/run_furuta_np_mpc_client.cpp).
 
 The simulator itself (QubeSimulator's own background process) always keeps
-running at its own real-time rate, applying whatever torque setpoint was
-last set -- with no client connected, that's just the last (or default
-zero) value, so it "emulates the real world" regardless of whether an MPC
-client is attached.
+running in real time, integrating at `--sim-rate` (default: its own
+QubeBase.frequency, 4000 Hz) and
+applying whatever torque setpoint was last set -- with no client connected,
+that's just the last (or default zero) value, so it "emulates the real
+world" regardless of whether an MPC client is attached.
 
 On top of that, this server accepts a single client connection and, for its
-duration: pushes the current state at a fixed cadence (`dt` from the MPC
-config) as length-prefixed JSON `{"t": <time>, "x": [...]}`, and applies
+duration: pushes the current state at a fixed cadence of `--state-rate`
+(default 200 Hz, independent of the integration rate and of the MPC model's
+`dt`) as length-prefixed JSON `{"t": <time>, "x": [...]}`, and applies
 whatever `{"u": [...]}` messages it receives to the simulator's torque
-setpoint as soon as they arrive.
+setpoint as soon as they arrive. An input message may also carry the
+client's MPC computation time, `{"u": [...], "solve_ms": <ms>}`, which is
+logged (see --dump).
 
 Wire format: each message is a 4-byte big-endian length prefix followed by
 that many bytes of UTF-8 JSON.
 
 If `--dump` is given (or, absent that, if the MPC config's `save` is true),
 each client session's closed-loop log (t, x, u -- one row per state sample
-sent, tagged with whichever torque command was most recently applied) is
+sent, tagged with whichever torque command was most recently applied; plus
+solve_t, solve_ms -- one entry per input message that reported a solve time) is
 written to `<dump>.npz` under model/ when that client disconnects,
 overwriting any previous session's dump. `--dump` defaults to the MPC
 config's `save_path`.
@@ -67,31 +72,42 @@ def recv_msg(conn):
 
 
 class ClosedLoopLog:
-    """Shared, single-writer-per-field log: sender_loop appends rows,
-    receiver_loop only updates `last_u` (a single float assignment is atomic
-    under the GIL, so no lock is needed between the two threads)."""
+    """Shared, single-writer-per-field log: sender_loop appends state rows,
+    receiver_loop only updates `last_u` and appends the client's solve times
+    (single assignments/appends are atomic under the GIL, so no lock is
+    needed between the two threads)."""
 
     def __init__(self):
         self.last_u = 0.0
         self.t = []
         self.x = []
         self.u = []
+        self.solve_t = []   # arrival time of each input message that carried a solve time
+        self.solve_ms = []  # MPC computation time reported by the client [ms]
 
     def record(self, t: float, x: list) -> None:
         self.t.append(t)
         self.x.append(x)
         self.u.append(self.last_u)
 
-    def save(self, path: Path, dt: float) -> None:
+    def record_solve(self, t: float, solve_ms: float) -> None:
+        self.solve_t.append(t)
+        self.solve_ms.append(solve_ms)
+
+    def save(self, path: Path, dt: float, state_period: float, sim_period: float) -> None:
         if not self.t:
             return
         np.savez(path,
                   t=np.array(self.t), x=np.array(self.x), u=np.array(self.u),
-                  dt=dt)
+                  solve_t=np.array(self.solve_t), solve_ms=np.array(self.solve_ms),
+                  dt=dt, state_period=state_period, sim_period=sim_period)
         print(f'Saved closed-loop log to {path} ({len(self.t)} steps)')
 
 
-def sender_loop(conn, qube, dt: float, stop_event: threading.Event, log: ClosedLoopLog = None) -> None:
+def sender_loop(conn, qube, period: float, stop_event: threading.Event, log: ClosedLoopLog = None) -> None:
+    # Fixed schedule (next_send += period) so the cadence doesn't drift by the
+    # time spent sending; if we fall behind, resync instead of bursting.
+    next_send = time.monotonic()
     while not stop_event.is_set():
         state = qube.get_state().tolist()
         t = time.time()
@@ -102,7 +118,12 @@ def sender_loop(conn, qube, dt: float, stop_event: threading.Event, log: ClosedL
         except OSError:
             stop_event.set()
             return
-        time.sleep(dt)
+        next_send += period
+        remaining = next_send - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        else:
+            next_send = time.monotonic()
 
 
 def receiver_loop(conn, qube, stop_event: threading.Event, log: ClosedLoopLog = None) -> None:
@@ -120,6 +141,9 @@ def receiver_loop(conn, qube, stop_event: threading.Event, log: ClosedLoopLog = 
             qube.set_torque_setpoint(float(u[0]))
             if log is not None:
                 log.last_u = float(u[0])
+        solve_ms = msg.get('solve_ms')
+        if solve_ms is not None and log is not None:
+            log.record_solve(time.time(), float(solve_ms))
 
 
 def main() -> None:
@@ -127,6 +151,11 @@ def main() -> None:
     parser.add_argument('--mpc-config', default=str(PROJECT_ROOT / 'model/furuta_mpc.json'))
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=56123)
+    parser.add_argument('--sim-rate', type=float, default=None,
+                        help='Rate [Hz] at which the simulator integrates the dynamics '
+                             '(default: the simulator\'s own rate, QubeBase.frequency = 4000 Hz).')
+    parser.add_argument('--state-rate', type=float, default=200.0,
+                        help='Rate [Hz] at which the state is sent to the client.')
     parser.add_argument('--dump', default=None,
                         help='Path prefix (bare filename resolved under model/) to dump each client '
                              'session\'s closed-loop log to, as "<dump>.npz". Defaults to the MPC '
@@ -137,8 +166,11 @@ def main() -> None:
     # dt/p from when it writes model/mpc_config.yaml for the C++ side, so
     # the two sides can't drift apart on dt.
     furuta_mpc = json.loads(Path(args.mpc_config).read_text())
-    dt = furuta_mpc['dt']
-    qube = create_hardware({'target': 'sim', 'p': furuta_mpc['p']})
+    dt = furuta_mpc['dt']  # MPC model/prediction step; only recorded in the dump
+    state_period = 1.0 / args.state_rate
+    qube = create_hardware({'target': 'sim', 'p': furuta_mpc['p'], 'frequency': args.sim_rate})
+    sim_rate = qube.frequency  # the rate actually used (class default if --sim-rate not given)
+    sim_period = 1.0 / sim_rate
 
     dump_prefix = args.dump
     if dump_prefix is None and furuta_mpc.get('save', False):
@@ -148,7 +180,8 @@ def main() -> None:
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))
     server.listen(1)
-    print(f'Qube server listening on {args.host}:{args.port} (dt={dt}s)')
+    print(f'Qube server listening on {args.host}:{args.port} '
+          f'(sim {sim_rate:g} Hz, state stream {args.state_rate:g} Hz, MPC dt={dt}s)')
 
     try:
         while True:
@@ -156,7 +189,7 @@ def main() -> None:
             print(f'Client connected: {addr}')
             stop_event = threading.Event()
             log = ClosedLoopLog() if dump_prefix else None
-            t_send = threading.Thread(target=sender_loop, args=(conn, qube, dt, stop_event, log), daemon=True)
+            t_send = threading.Thread(target=sender_loop, args=(conn, qube, state_period, stop_event, log), daemon=True)
             t_recv = threading.Thread(target=receiver_loop, args=(conn, qube, stop_event, log), daemon=True)
             t_send.start()
             t_recv.start()
@@ -166,7 +199,7 @@ def main() -> None:
             print('Client disconnected; simulator keeps running with the last input.')
             if log is not None:
                 dump_path = PROJECT_ROOT / 'model' / f'{dump_prefix}.npz'
-                log.save(dump_path, dt)
+                log.save(dump_path, dt, state_period, sim_period)
     except KeyboardInterrupt:
         pass
     finally:

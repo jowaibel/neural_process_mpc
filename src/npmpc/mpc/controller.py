@@ -99,16 +99,25 @@ class MPCController:
             sim_steps = self.params['experiment_options']['sim_steps']
             dt = self.params['dt']
 
+            # Fixed run length in (real-time) simulation time, the same for every
+            # agent (C++ clients too): sim_steps * dt. Steps are paced to at least
+            # dt (RuntimeBase.apply_solution), so sim_steps also bounds the number
+            # of steps that fit in it -- and sizes the runtime's buffers.
+            sim_time = sim_steps * dt
+
             logger.info(
                 f"Starting MPC ({self.params['method']}/{self.params['system']}): "
-                f"{sim_steps} steps, horizon={self.params['horizon_steps']}, dt={dt}s"
+                f"{sim_time:g}s (at most {sim_steps} steps), horizon={self.params['horizon_steps']}, dt={dt}s"
             )
             t_start = time.time()
             self.warm_start(x0)
 
             solve_times = []
             failures = 0
+            t_loop = time.time()
             for step in range(sim_steps):
+                if time.time() - t_loop >= sim_time:
+                    break
                 x_init, u_init, lam_g_init, x0 = self.runtime.load_initial_solution()
                 self.problem.set_initial(self.x, x_init)
                 self.problem.set_initial(self.u, u_init)

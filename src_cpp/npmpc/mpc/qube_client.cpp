@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -79,7 +80,7 @@ double extractNumber(const std::string& json, const std::string& key) {
     return std::stod(json.substr(colon + 1, end - colon - 1));
 }
 
-std::string encodeInput(const std::vector<double>& u) {
+std::string encodeInput(const std::vector<double>& u, std::optional<double> solveMs) {
     std::ostringstream oss;
     oss << std::setprecision(17);
     oss << "{\"u\":[";
@@ -87,7 +88,11 @@ std::string encodeInput(const std::vector<double>& u) {
         if (i > 0) oss << ",";
         oss << u[i];
     }
-    oss << "]}";
+    oss << "]";
+    if (solveMs.has_value()) {
+        oss << ",\"solve_ms\":" << *solveMs;
+    }
+    oss << "}";
     return oss.str();
 }
 
@@ -145,8 +150,28 @@ bool QubeClient::receiveState(QubeState& state) {
     return true;
 }
 
-void QubeClient::sendInput(const std::vector<double>& u) {
-    std::string payload = encodeInput(u);
+bool QubeClient::receiveLatestState(QubeState& state, int* skipped) {
+    if (!receiveState(state)) {
+        return false;
+    }
+    int nSkipped = 0;
+    pollfd pfd{socketFd_, POLLIN, 0};
+    while (::poll(&pfd, 1, /*timeout_ms=*/0) > 0 && (pfd.revents & POLLIN)) {
+        QubeState newer;
+        if (!receiveState(newer)) {
+            return false;
+        }
+        state = std::move(newer);
+        ++nSkipped;
+    }
+    if (skipped != nullptr) {
+        *skipped = nSkipped;
+    }
+    return true;
+}
+
+void QubeClient::sendInput(const std::vector<double>& u, std::optional<double> solveMs) {
+    std::string payload = encodeInput(u, solveMs);
     uint32_t lengthNet = htonl(static_cast<uint32_t>(payload.size()));
     sendAll(socketFd_, reinterpret_cast<const char*>(&lengthNet), sizeof(lengthNet));
     sendAll(socketFd_, payload.data(), payload.size());
