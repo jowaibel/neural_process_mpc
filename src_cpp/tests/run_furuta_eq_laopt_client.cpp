@@ -1,6 +1,7 @@
 // Connects to the Python Qube simulator server (scripts/run_qube_server.py)
-// and drives it in closed loop with the laopt NP MPC (FurutaNPOcpEigen.hpp),
-// the laopt counterpart of run_furuta_np_mpc_client.cpp.
+// and drives it in closed loop with the equation-based laopt MPC
+// (FurutaEqOcpEigen.hpp: analytical Furuta ODE); otherwise the same as
+// run_furuta_np_laopt_client.cpp (NP dynamics).
 //
 // The loop runs as fast as possible: as soon as a solve is done and its first
 // input is sent, the next solve starts from the newest state measurement
@@ -23,7 +24,7 @@
 #include "laopt/laopt.hpp"
 #include "laopt/tools/multiple_shooting.hpp"
 
-#include "npmpc/mpc/laopt/FurutaNPOcpEigen.hpp"
+#include "npmpc/mpc/laopt/FurutaEqOcpEigen.hpp"
 #include "npmpc/mpc/laopt/laopt_solver.hpp"
 #include "npmpc/mpc/qube_client.hpp"
 
@@ -33,16 +34,16 @@
 
 namespace {
 
-constexpr int N = 12; // must match horizon_steps in mpc_config.yaml
+constexpr int N = 12; // must match horizon_steps in mpc_config_equation.yaml
 
 /* Solver switch: IPOPT or SQP with PIQP as QP solver (settings in laopt_solver.hpp). */
 using npmpc::mpc::furuta_laopt::SolverType;
 
-constexpr SolverType kSolver = SolverType::IPOPT;
-// constexpr SolverType kSolver = SolverType::SQP_PIQP;
+// constexpr SolverType kSolver = SolverType::IPOPT;
+constexpr SolverType kSolver = SolverType::SQP_PIQP;
 
-using Ocp = npmpc::mpc::furuta_laopt::FurutaNPOCP<N>;
-using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
+using Ocp = npmpc::mpc::furuta_laopt::FurutaEqOCP<N>;
+using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::IRK2>; // implicit midpoint, as in Python
 using OptProblem = laopt::Problem<Transcription>;
 using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 
@@ -54,20 +55,17 @@ constexpr int NXP = npmpc::mpc::furuta_laopt::kNX;      // physical state size (
 using StateTrajectory = Ocp::PhysStateTrajectory;       // physical states (NXP, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
-// Cold-start input guess: constant at the lower bound (negative u drives
-// positive theta_dot), to leave the symmetric hanging position where the
-// Gauss-Newton SQP sees no gradient.
-InputTrajectory coldStartU(const Ocp& ocp)
+// Cold start as in MPCController.warm_start: x linear from x0 to [2pi,0,0,0], u = 0
+// (from which both IPOPT and SQP converge to the Python solution, see eval_furuta_eq_laopt).
+StateTrajectory coldStartX(const Ocp::PhysState& x0)
 {
-    return InputTrajectory::Constant(ocp.settings.uLb(0));
-}
-
-// Cold-start state guess: the NP rollout of the input guess from x0, so the
-// guess satisfies the dynamics constraints exactly (instead of MPCController's
-// linear interpolation to [2pi,0,0,0], which violates them).
-StateTrajectory coldStartX(const Ocp& ocp, const Ocp::PhysState& x0, const InputTrajectory& u)
-{
-    return ocp.model.rollout<N>(x0, u, ocp.settings.z, ocp.settings.dt);
+    const Ocp::PhysState target(2.0 * M_PI, 0.0, 0.0, 0.0);
+    StateTrajectory x;
+    for (int i = 0; i <= N; ++i) {
+        const double t = static_cast<double>(i) / N;
+        x.col(i) = x0 + t * (target - x0);
+    }
+    return x;
 }
 
 } // namespace
@@ -78,13 +76,11 @@ int main(int argc, char** argv)
 
     const std::string host = argc > 1 ? argv[1] : "127.0.0.1";
     const int port = argc > 2 ? std::stoi(argv[2]) : 56123;
-    const std::string weightsPath =
-        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/np_weights.yaml";
     const std::string mpcConfigPath =
-        argc > 4 ? argv[4] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config.yaml";
+        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config_equation.yaml";
 
     /* Build OCP, transcription, problem (tape) and solver once */
-    std::shared_ptr<Ocp> ocp = std::make_shared<Ocp>(weightsPath, mpcConfigPath);
+    std::shared_ptr<Ocp> ocp = std::make_shared<Ocp>(mpcConfigPath);
     std::shared_ptr<Transcription> transcription = std::make_shared<Transcription>(ocp);
     std::shared_ptr<OptProblem> optProblem = std::make_shared<OptProblem>(transcription); // generates the tape
     Solver solver(optProblem);
@@ -97,7 +93,7 @@ int main(int argc, char** argv)
 
     std::cout << "Connecting to Qube server at " << host << ":" << port << "...\n";
     npmpc::mpc::QubeClient client(host, port);
-    std::cout << "Connected. Running closed loop (" << npmpc::mpc::furuta_laopt::solverName<Solver>()
+    std::cout << "Connected. Running closed loop (equation OCP, " << npmpc::mpc::furuta_laopt::solverName<Solver>()
               << ") for " << runTime << " s.\n";
 
     npmpc::mpc::QubeState state;
@@ -122,11 +118,9 @@ int main(int argc, char** argv)
 
         if (nSolves == 0) {
             tStart = state.t;
-            // Cold start (dynamically consistent: X = NP rollout of U from x);
-            // guesses must be set after the solver is constructed.
-            const InputTrajectory uGuess = coldStartU(*ocp);
-            transcription->set_X_guess(Ocp::augment(coldStartX(*ocp, x, uGuess)));
-            transcription->set_U_guess(uGuess); // typed as a trajectory: the overloads are ambiguous for NU = 1
+            // Cold start; guesses must be set after the solver is constructed.
+            transcription->set_X_guess(Ocp::augment(coldStartX(x)));
+            transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: overloads are ambiguous for NU = 1
             transcription->set_p_guess(Ocp::Param::Zero());
         }
         if (state.t - tStart >= runTime) {

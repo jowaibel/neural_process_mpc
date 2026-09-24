@@ -44,8 +44,8 @@ void configureSolver(SolverT& solver)
     else
     {
         solver.settings().max_iter = 1; // laopt defaults otherwise (eps_prim 1e-6, eps_dual 1e-4, Gauss-Newton Hessian)
-        solver.settings().hessian_approximation = laopt::hessian_approximation_t::GAUSS_NEWTON;
-        // solver.settings().globalization_strategy = laopt::globalization_t::LINE_SEARCH_L1;
+        // solver.settings().hessian_approximation = laopt::hessian_approximation_t::EXACT;
+        solver.settings().globalization_strategy = laopt::globalization_t::LINE_SEARCH_L1;
     }
 }
 
