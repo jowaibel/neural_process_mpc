@@ -8,6 +8,7 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 find_package(laopt REQUIRED)
 find_package(Ipopt REQUIRED)
+find_package(piqp REQUIRED)
 find_package(casadi REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -39,12 +40,13 @@ add_executable(eval_furuta_np_eigen src_cpp/tests/eval_furuta_np_eigen.cpp)
 target_link_libraries(eval_furuta_np_eigen PRIVATE npmpc)
 target_compile_definitions(eval_furuta_np_eigen PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
-# laopt + IPOPT NP MPC (the installed laopt package has no laopt_target_enable_ipopt,
-# so IPOPT is wired in here via cmake/FindIpopt.cmake).
+# laopt NP MPC with IPOPT or SQP/PIQP (the installed laopt package has no
+# laopt_target_enable_* helpers, so the solvers are wired in here; IPOPT via
+# cmake/FindIpopt.cmake).
 add_executable(eval_furuta_np_laopt src_cpp/tests/eval_furuta_np_laopt.cpp)
-target_link_libraries(eval_furuta_np_laopt PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES})
+target_link_libraries(eval_furuta_np_laopt PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES} piqp::piqp_header_only)
 target_include_directories(eval_furuta_np_laopt PRIVATE ${Ipopt_INCLUDE_DIRS})
-target_compile_definitions(eval_furuta_np_laopt PRIVATE LAOPT_WITH_IPOPT NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(eval_furuta_np_laopt PRIVATE LAOPT_WITH_IPOPT LAOPT_WITH_PIQP NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 add_executable(eval_furuta_mpc src_cpp/tests/eval_furuta_mpc.cpp)
 target_link_libraries(eval_furuta_mpc PRIVATE npmpc)

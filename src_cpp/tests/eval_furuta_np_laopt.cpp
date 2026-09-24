@@ -1,7 +1,7 @@
 // Validates the laopt OCP (FurutaNPOcpEigen.hpp) against the CasADi/Opti path:
 //  1. Cost check: the OCP's objective terms on an NP rollout must equal the
 //     CasADi furutaCost.
-//  2. Solve: MultipleShooting + IPOPT from the MPCController cold start must
+//  2. Solve: MultipleShooting + IPOPT or SQP/PIQP (switch: kSolver) from the MPCController cold start must
 //     reproduce the CasADi MPCController solution for the x0 in mpc_config.yaml.
 //  3. Re-solve from a different x0 without re-taping (the x0 bounds are
 //     changed on the OCP between solves).
@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <type_traits>
 
 #include <casadi/casadi.hpp>
 #include <Eigen/Dense>
@@ -20,6 +21,8 @@
 #include "laopt/laopt.hpp"
 #include "laopt/tools/multiple_shooting.hpp"
 #include "laopt/solvers/ipopt_interface.hpp"
+#include "laopt/solvers/sqp_solver.hpp"
+#include "laopt/solvers/piqp_interface.hpp"
 
 #include "npmpc/mpc/controller.hpp"
 #include "npmpc/mpc/laopt/FurutaNPOcpEigen.hpp"
@@ -36,17 +39,65 @@ namespace {
 
 constexpr int N = 12; // must match horizon_steps in mpc_config.yaml
 
+/* Solver switch: IPOPT or SQP with PIQP as QP solver. */
+enum class SolverType { IPOPT, SQP_PIQP };
+constexpr SolverType kSolver = SolverType::SQP_PIQP;
+
 using Ocp = npmpc::mpc::furuta_laopt::FurutaNPOCP<N>;
 using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
 using OptProblem = laopt::Problem<Transcription>;
-using Solver = laopt::IpoptSolver<OptProblem>;
+using Solver = std::conditional_t<kSolver == SolverType::IPOPT,
+                                  laopt::IpoptSolver<OptProblem>,
+                                  laopt::SQPSolver<OptProblem, laopt::PIQPSolver<>>>;
+constexpr const char* kSolverName = kSolver == SolverType::IPOPT ? "IPOPT" : "SQP (PIQP)";
 
 using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
-bool ipoptSucceeded(Ipopt::ApplicationReturnStatus status)
+/* Solver-specific settings; the rest of the test is solver-independent.
+ * (Template so that the if-constexpr branch of the other solver is discarded.) */
+template<typename SolverT>
+void configureLaoptSolver(SolverT& solver)
+{
+    if constexpr (kSolver == SolverType::IPOPT) {
+        solver.set_banner_message(false);
+        solver.set_print_level(0);
+        solver.set_tol(1e-6);    // as configureSolver("ipopt") in the CasADi path
+        solver.set_max_iter(50); // as configureSolver("ipopt") in the CasADi path
+    } else {
+        solver.settings().max_iter = 2; // laopt defaults otherwise (eps_prim 1e-6, eps_dual 1e-4, Gauss-Newton Hessian)
+    }
+}
+
+/* Solve status of either solver (overloaded on the solve() return type). */
+bool solveSucceeded(Ipopt::ApplicationReturnStatus status)
 {
     return status == Ipopt::Solve_Succeeded || status == Ipopt::Solved_To_Acceptable_Level;
+}
+
+std::string statusText(Ipopt::ApplicationReturnStatus status)
+{
+    return laopt::IpoptSolver<OptProblem>::ipopt_status_text(status);
+}
+
+bool solveSucceeded(const laopt::sqp_info_t& info)
+{
+    return info.status == laopt::sqp_status_t::SOLVED;
+}
+
+std::string statusText(const laopt::sqp_info_t& info)
+{
+    std::string status;
+    switch (info.status) {
+        case laopt::sqp_status_t::SOLVED: status = "SOLVED"; break;
+        case laopt::sqp_status_t::MAX_ITER_REACHED: status = "MAX_ITER_REACHED"; break;
+        case laopt::sqp_status_t::INFEASIBLE: status = "INFEASIBLE"; break;
+        case laopt::sqp_status_t::NON_CONVEX_QP: status = "NON_CONVEX_QP"; break;
+        case laopt::sqp_status_t::QP_SOLVER_ERROR: status = "QP_SOLVER_ERROR"; break;
+        case laopt::sqp_status_t::UNSOLVED: status = "UNSOLVED"; break;
+        case laopt::sqp_status_t::INVALID_SETTINGS: status = "INVALID_SETTINGS"; break;
+    }
+    return status + " (" + std::to_string(info.iter) + " SQP iter, " + std::to_string(info.qp_iter) + " QP iter)";
 }
 
 // laopt objective as MultipleShooting assembles it: sum_k h * lagrange + mayer, h = 1/N.
@@ -143,10 +194,7 @@ int main(int argc, char** argv)
     std::shared_ptr<OptProblem> optProblem = std::make_shared<OptProblem>(transcription); // generates the tape
 
     Solver solver(optProblem);
-    solver.set_banner_message(false);
-    solver.set_print_level(0);
-    solver.set_tol(1e-6);    // as configureSolver("ipopt")
-    solver.set_max_iter(50); // as configureSolver("ipopt")
+    configureLaoptSolver(solver);
 
     // Guesses must be set after the solver is constructed (see MultipleShooting::set_X_guess).
     transcription->set_X_guess(coldStartX(x0));
@@ -154,7 +202,7 @@ int main(int argc, char** argv)
     transcription->set_p_guess(Ocp::Param::Zero());
 
     const steady_clock::time_point tSolve0 = steady_clock::now();
-    const Ipopt::ApplicationReturnStatus status1 = solver.solve();
+    const auto status1 = solver.solve();
     const double solve1Ms = duration<double, std::milli>(steady_clock::now() - tSolve0).count();
 
     const StateTrajectory xLaopt = transcription->get_X_opt();
@@ -169,15 +217,15 @@ int main(int argc, char** argv)
     const double xDiff = (xLaopt - xCasadi).cwiseAbs().maxCoeff();
     const double uDiff = (uLaopt - uCasadi).cwiseAbs().maxCoeff();
 
-    std::cout << "\n[solve 1] IPOPT status: " << Solver::ipopt_status_text(status1)
+    std::cout << "\n[solve 1] " << kSolverName << " status: " << statusText(status1)
               << "  solve: " << solve1Ms << " ms\n";
     std::cout << "X laopt (rows = time steps):\n" << xLaopt.transpose() << "\n";
     std::cout << "U laopt: " << uLaopt << "\n";
     std::cout << "U CasADi: " << uCasadi << "\n";
     std::cout << "slack laopt: " << transcription->get_p_opt().transpose() << "\n";
     std::cout << "max |X laopt - X CasADi| = " << xDiff << ",  max |U laopt - U CasADi| = " << uDiff << "\n";
-    if (!ipoptSucceeded(status1)) {
-        std::cerr << "[solve 1] IPOPT did not converge\n";
+    if (!solveSucceeded(status1)) {
+        std::cerr << "[solve 1] " << kSolverName << " did not converge\n";
         ok = false;
     }
     if (xDiff > 1e-4 || uDiff > 1e-4) {
@@ -190,15 +238,15 @@ int main(int argc, char** argv)
     ocp->set_initial_state(x0b);
 
     const steady_clock::time_point tSolve1 = steady_clock::now();
-    const Ipopt::ApplicationReturnStatus status2 = solver.solve();
+    const auto status2 = solver.solve();
     const double solve2Ms = duration<double, std::milli>(steady_clock::now() - tSolve1).count();
 
     const double x0Err = (transcription->get_X_opt().col(0) - x0b).cwiseAbs().maxCoeff();
-    std::cout << "\n[solve 2] IPOPT status: " << Solver::ipopt_status_text(status2) << "  solve: " << solve2Ms << " ms\n";
+    std::cout << "\n[solve 2] " << kSolverName << " status: " << statusText(status2) << "  solve: " << solve2Ms << " ms\n";
     std::cout << "x0 requested: " << x0b.transpose() << "\n";
     std::cout << "x0 solution:  " << transcription->get_X_opt().col(0).transpose() << "  (max err " << x0Err << ")\n";
-    if (!ipoptSucceeded(status2)) {
-        std::cerr << "[solve 2] IPOPT did not converge\n";
+    if (!solveSucceeded(status2)) {
+        std::cerr << "[solve 2] " << kSolverName << " did not converge\n";
         ok = false;
     }
     if (x0Err > 1e-3 + 1e-6) {
