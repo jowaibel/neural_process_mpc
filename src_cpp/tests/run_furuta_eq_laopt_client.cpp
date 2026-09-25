@@ -56,7 +56,7 @@ constexpr int kMaxInitialSolves = 500;
 // the input is sent no earlier than kMinSolveMs after the solve started
 // (waiting if the solve was faster). 0 = send as soon as the solve is done.
 // The logged solve_ms stays the actual solver time.
-constexpr double kMinSolveMs = 5.0;
+constexpr double kMinSolveMs = 4.3; // ~ median CasADi/IPOPT solve time
 
 constexpr int NXP = Ocp::NX;                            // state size
 using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)

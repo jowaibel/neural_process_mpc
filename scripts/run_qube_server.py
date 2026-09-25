@@ -1,6 +1,6 @@
 """TCP server wrapping QubeSimulator for the C++ MPC clients
 (src_cpp/tests/run_furuta_np_casadi_client.cpp, run_furuta_np_laopt_client.cpp,
-run_furuta_eq_laopt_client.cpp).
+run_furuta_eq_casadi_client.cpp, run_furuta_eq_laopt_client.cpp).
 
 The simulator itself (QubeSimulator's own background process) always keeps
 running in real time, integrating at `--sim-rate` (default: its own
@@ -12,7 +12,7 @@ world" regardless of whether an MPC client is attached.
 On top of that, this server accepts a single client connection (one
 experiment per server run: when that client disconnects, the server saves
 the log and shuts down) and, for its duration: pushes the current state at a fixed cadence of `--state-rate`
-(default 200 Hz, independent of the integration rate and of the MPC model's
+(default 500 Hz, independent of the integration rate and of the MPC model's
 `dt`) as length-prefixed JSON `{"t": <time>, "x": [...]}`, and applies
 whatever `{"u": [...]}` messages it receives to the simulator's torque
 setpoint as soon as they arrive. An input message may also carry the
@@ -201,7 +201,7 @@ def main() -> None:
     parser.add_argument('--sim-rate', type=float, default=None,
                         help='Rate [Hz] at which the simulator integrates the dynamics '
                              '(default: the simulator\'s own rate, QubeBase.frequency = 4000 Hz).')
-    parser.add_argument('--state-rate', type=float, default=200.0,
+    parser.add_argument('--state-rate', type=float, default=500.0,
                         help='Rate [Hz] at which the state is sent to the client.')
     parser.add_argument('--dump', default=None,
                         help='Path prefix (bare filename resolved under model/) to dump the client '
