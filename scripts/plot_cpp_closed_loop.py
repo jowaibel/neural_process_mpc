@@ -12,8 +12,20 @@ and, in newer dumps:
   state_period, sim_period ()  state-stream and simulator integration periods (s)
 """
 import argparse
+from pathlib import Path
+
 import numpy as np
 from matplotlib import pyplot as plt
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def display_path(path: str) -> str:
+    """`path` relative to the project root (e.g. model/experiment_x.npz), or as given if outside it."""
+    try:
+        return str(Path(path).resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return path
 
 
 def main():
@@ -59,7 +71,7 @@ def main():
     else:
         ax_c.axis('off')  # older dumps without solve times
 
-    fig.suptitle(f'{args.path} -- C++ NP-MPC closed loop')
+    fig.suptitle(f'{display_path(args.path)} -- C++ NP-MPC closed loop')
     fig.tight_layout()
     plt.show()
 

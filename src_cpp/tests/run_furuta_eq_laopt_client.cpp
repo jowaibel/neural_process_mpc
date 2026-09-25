@@ -22,7 +22,7 @@
 #include <Eigen/Dense>
 
 #include "laopt/laopt.hpp"
-#include "laopt/tools/multiple_shooting.hpp"
+#include "npmpc/mpc/laopt/multiple_shooting_xdiff.hpp"
 
 #include "npmpc/mpc/laopt/FurutaEqOcpEigen.hpp"
 #include "npmpc/mpc/laopt/laopt_solver.hpp"
@@ -43,7 +43,7 @@ using npmpc::mpc::furuta_laopt::SolverType;
 constexpr SolverType kSolver = SolverType::SQP_PIQP;
 
 using Ocp = npmpc::mpc::furuta_laopt::FurutaEqOCP<N>;
-using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::IRK2>; // implicit midpoint, as in Python
+using Transcription = laopt_tools::MultipleShootingXDiff<Ocp, N, laopt::IRK2>; // implicit midpoint, as in Python
 using OptProblem = laopt::Problem<Transcription>;
 using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 
@@ -51,15 +51,15 @@ using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 // the first input is sent).
 constexpr int kMaxInitialSolves = 500;
 
-constexpr int NXP = npmpc::mpc::furuta_laopt::kNX;      // physical state size (Ocp::NX = 2 * NXP: [x; d])
-using StateTrajectory = Ocp::PhysStateTrajectory;       // physical states (NXP, N+1)
+constexpr int NXP = Ocp::NX;                            // state size
+using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
 // Cold start as in MPCController.warm_start: x linear from x0 to [2pi,0,0,0], u = 0
 // (from which both IPOPT and SQP converge to the Python solution, see eval_furuta_eq_laopt).
-StateTrajectory coldStartX(const Ocp::PhysState& x0)
+StateTrajectory coldStartX(const Ocp::State& x0)
 {
-    const Ocp::PhysState target(2.0 * M_PI, 0.0, 0.0, 0.0);
+    const Ocp::State target(2.0 * M_PI, 0.0, 0.0, 0.0);
     StateTrajectory x;
     for (int i = 0; i <= N; ++i) {
         const double t = static_cast<double>(i) / N;
@@ -114,12 +114,12 @@ int main(int argc, char** argv)
             std::cerr << "Received state of size " << state.x.size() << ", expected " << NXP << ".\n";
             return 1;
         }
-        const Ocp::PhysState x = Eigen::Map<const Ocp::PhysState>(state.x.data());
+        const Ocp::State x = Eigen::Map<const Ocp::State>(state.x.data());
 
         if (nSolves == 0) {
             tStart = state.t;
             // Cold start; guesses must be set after the solver is constructed.
-            transcription->set_X_guess(Ocp::augment(coldStartX(x)));
+            transcription->set_X_guess(coldStartX(x));
             transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: overloads are ambiguous for NU = 1
             transcription->set_p_guess(Ocp::Param::Zero());
         }

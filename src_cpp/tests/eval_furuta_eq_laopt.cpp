@@ -22,7 +22,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "laopt/laopt.hpp"
-#include "laopt/tools/multiple_shooting.hpp"
+#include "npmpc/mpc/laopt/multiple_shooting_xdiff.hpp"
 
 #include "npmpc/mpc/laopt/FurutaEqOcpEigen.hpp"
 #include "npmpc/mpc/laopt/laopt_solver.hpp"
@@ -39,14 +39,14 @@ constexpr int N = 12; // must match horizon_steps in the config
 constexpr int kMaxSolves = 100; // re-solves until converged, as MPCController.warm_start's retries
 
 using Ocp = FurutaEqOCP<N>;
-using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::IRK2>; // implicit midpoint, as in Python
+using Transcription = laopt_tools::MultipleShootingXDiff<Ocp, N, laopt::IRK2>; // implicit midpoint, as in Python
 using OptProblem = laopt::Problem<Transcription>;
 
-using StateTrajectory = Ocp::PhysStateTrajectory;       // physical states (kNX, N+1)
+using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
 struct Reference {
-    Ocp::PhysState x0;
+    Ocp::State x0;
     StateTrajectory x;
     InputTrajectory u;
     double objective;
@@ -71,24 +71,24 @@ Reference loadReference(const std::string& path)
     return ref;
 }
 
-// laopt objective as MultipleShooting assembles it: sum_k h * lagrange + mayer, h = 1/N.
+// laopt objective as MultipleShootingXDiff assembles it for continuous dynamics:
+// sum_k h * lagrange(x_k, x_{k+1}, u_k) + mayer, h = 1/N.
 double ocpObjective(Ocp& ocp, const StateTrajectory& x, const InputTrajectory& u, const Ocp::Param& p)
 {
     const Eigen::Vector<double, 1> t0 = Eigen::Vector<double, 1>::Constant(ocp.t0);
     const Eigen::Vector<double, 1> tf = Eigen::Vector<double, 1>::Constant(ocp.tf_lb);
-    const Ocp::StateTrajectory xa = Ocp::augment(x);
     const double h = 1.0 / N;
     double obj = 0.0;
     for (int k = 0; k < N; ++k) {
-        obj += h * ocp.lagrange_term_impl(Ocp::State(xa.col(k)), Ocp::Input(u.col(k)), p, t0, tf, double(k) / N);
+        obj += h * ocp.lagrange_term_impl(Ocp::State(x.col(k)), Ocp::State(x.col(k + 1)), Ocp::Input(u.col(k)), p, t0, tf, double(k) / N);
     }
-    return obj + ocp.mayer_term_impl(Ocp::State(xa.col(N)), p, t0, tf);
+    return obj + ocp.mayer_term_impl(Ocp::State(x.col(N)), p, t0, tf);
 }
 
 // Cold start as in MPCController.warm_start: x linear from x0 to [2pi,0,0,0], u = 0.
-StateTrajectory coldStartX(const Ocp::PhysState& x0)
+StateTrajectory coldStartX(const Ocp::State& x0)
 {
-    const Ocp::PhysState target(2.0 * M_PI, 0.0, 0.0, 0.0);
+    const Ocp::State target(2.0 * M_PI, 0.0, 0.0, 0.0);
     StateTrajectory x;
     for (int i = 0; i <= N; ++i) {
         const double t = static_cast<double>(i) / N;
@@ -113,7 +113,7 @@ bool solveAndCompare(const std::string& mpcConfigPath, const Reference& ref)
     configureSolver(solver);
 
     // Guesses must be set after the solver is constructed (see MultipleShooting::set_X_guess).
-    transcription->set_X_guess(Ocp::augment(coldStartX(ref.x0)));
+    transcription->set_X_guess(coldStartX(ref.x0));
     transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: overloads are ambiguous for NU = 1
     transcription->set_p_guess(Ocp::Param::Zero());
 
@@ -126,7 +126,7 @@ bool solveAndCompare(const std::string& mpcConfigPath, const Reference& ref)
     }
     const double ms = duration<double, std::milli>(steady_clock::now() - t0).count();
 
-    const StateTrajectory x = transcription->get_X_opt().template topRows<kNX>(); // physical part of [x; d]
+    const StateTrajectory x = transcription->get_X_opt();
     const InputTrajectory u = transcription->get_U_opt();
     const double obj = ocpObjective(*ocp, x, u, transcription->get_p_opt());
     const double xDiff = (x - ref.x).cwiseAbs().maxCoeff();
@@ -170,9 +170,9 @@ int main(int argc, char** argv)
         const double dt = ocp.settings.dt;
         double maxResidual = 0.0;
         for (int k = 0; k < N; ++k) {
-            const Ocp::PhysState xMid = 0.5 * (ref.x.col(k) + ref.x.col(k + 1));
-            const Ocp::PhysState f = ocp.furuta_ode<double>(xMid, Ocp::Input(ref.u.col(k)));
-            const Ocp::PhysState residual = ref.x.col(k) + dt * f - ref.x.col(k + 1);
+            const Ocp::State xMid = 0.5 * (ref.x.col(k) + ref.x.col(k + 1));
+            const Ocp::State f = ocp.furuta_ode<double>(xMid, Ocp::Input(ref.u.col(k)));
+            const Ocp::State residual = ref.x.col(k) + dt * f - ref.x.col(k + 1);
             maxResidual = std::max(maxResidual, residual.cwiseAbs().maxCoeff());
         }
         std::cout << "[dynamics] max implicit-midpoint residual on the Python solution: " << maxResidual << "\n";

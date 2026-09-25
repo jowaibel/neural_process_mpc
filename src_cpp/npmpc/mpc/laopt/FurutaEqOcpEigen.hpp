@@ -7,12 +7,13 @@
 // one file (following laopt/examples/fixed_wing/LonOcpEigen.hpp); only the
 // config loader is shared (furuta_ocp_settings.hpp).
 //
-// Transcribe with laopt_tools::MultipleShooting<FurutaEqOCP<N>, N, laopt::IRK2>:
-// continuous dynamics (dynamics_impl = the Furuta ODE) discretized by laopt's
-// implicit midpoint rule, x_{k+1} = x_k + dt * f((x_k + x_{k+1}) / 2, u_k), which
-// is exactly MidpointIntegration.casadi_implicit in Python. This needs
-// tf = N * dt (set in apply_settings), since MultipleShooting steps by
-// (tf - t0) / N.
+// Transcribe with MultipleShootingXDiff<FurutaEqOCP<N>, N, laopt::IRK2>
+// (multiple_shooting_xdiff.hpp: its Lagrange term also gets x_{k+1}, for the
+// x_diff cost): continuous dynamics (dynamics_impl = the Furuta ODE)
+// discretized by laopt's implicit midpoint rule,
+// x_{k+1} = x_k + dt * f((x_k + x_{k+1}) / 2, u_k), which is exactly
+// MidpointIntegration.casadi_implicit in Python. This needs tf = N * dt (set in
+// apply_settings), since the transcription steps by (tf - t0) / N.
 
 #include <cmath>
 #include <limits>
@@ -27,38 +28,25 @@
 
 namespace npmpc::mpc::furuta_laopt {
 
-/* FurutaEqOCP: decision variables per MultipleShooting node are the OCP state
- * [x_k; d_k] (NX = 2 * kNX) and u_k (NU), where x is the physical state and
- * d_k = x_k - x_{k-1} its change over the previous step (d_0 fixed to 0), for
- * the x_diff cost as in FurutaNPOCP. The optimized parameters p (NP = kNX) are
- * the horizon-wide state slacks.
- *
- * With continuous dynamics, d gets the ODE  d_dot = 2 f(x) - 2 d / dt.  Under
- * the implicit midpoint rule (IRK2) with step dt this gives exactly
- * d_{k+1} = dt * f(x_mid) = x_{k+1} - x_k  (d_k cancels), i.e. the same d as
- * in the discrete NP OCP. This holds only for IRK2 with step dt.
+/* FurutaEqOCP: decision variables per MultipleShooting node are x_k (NX) and
+ * u_k (NU); the optimized parameters p (NP = NX) are the horizon-wide state
+ * slacks.
  *
  * Python -> laopt mapping:
  *   integration_constraints (implicit midpoint) -> dynamics_impl + laopt::IRK2
- *   furuta_cost, stage + interstage terms       -> lagrange_term_impl (scaled by N)
- *   furuta_cost, terminal term (+ x_diff on d_N) -> mayer_term_impl
+ *   furuta_cost, stage + interstage terms       -> lagrange_term_impl(x_k, x_{k+1}, u_k) (scaled by N)
+ *   furuta_cost, terminal term                  -> mayer_term_impl
  *   slack_cost                                  -> mayer_term_impl (p is horizon-wide)
  *   slack/state/input constraints, x0 +- 1e-3   -> as in FurutaNPOCP
  */
 template<int N_>
 class FurutaEqOCP :
-        public laopt_tools::ControlProblemBase</*Scalar*/ double, /*NX*/ kNXOcp, /*NU*/ kNU, /*NP*/ kNP,
+        public laopt_tools::ControlProblemBase</*Scalar*/ double, /*NX*/ kNX, /*NU*/ kNU, /*NP*/ kNP,
                                                /*NG*/ kNG, /*NG0*/ kNG, /*NGF*/ kNG>
 {
 public:
     static constexpr int N = N_; // horizon steps (MultipleShooting segments)
     static constexpr double kGravity = 9.81; // FurutaDynamics.g
-
-    /* Physical state (kNX) vs. OCP state (NX = [x; d]) */
-    template<typename T> using phys_state_t = Eigen::Vector<T, kNX>;
-    using PhysState = phys_state_t<double>;
-    using PhysStateTrajectory = Eigen::Matrix<double, kNX, N + 1>; // column k = x_k
-    using StateTrajectory = Eigen::Matrix<double, kNXOcp, N + 1>;   // column k = [x_k; d_k]
 
     FurutaOcpSettings settings;
 
@@ -94,34 +82,21 @@ public:
         }
 
         // g = [x - s; x + s]:  x - s <= x_ub,  x + s >= x_lb  (rows with inf bounds are free).
-        g_ub << settings.xUb, PhysState::Constant(inf);
-        g_lb << PhysState::Constant(-inf), settings.xLb;
+        g_ub << settings.xUb, State::Constant(inf);
+        g_lb << State::Constant(-inf), settings.xLb;
         g0_ub = g_ub;
         g0_lb = g_lb;
         gf_ub = g_ub;
         gf_lb = g_lb;
 
-        set_tf(N * settings.dt); // MultipleShooting steps by tf / N = dt
+        set_tf(N * settings.dt); // the transcription steps by tf / N = dt
     }
 
-    // Initial state constraint, as in MPCController: x_0 within x0 +- 1e-3,
-    // for the physical state x0. d_0 is fixed to 0.
-    void set_initial_state(const PhysState& x0)
+    // Initial state constraint, as in MPCController: x_0 within x0 +- 1e-3.
+    void set_initial_state(const State& x0)
     {
-        x0_lb << x0 - PhysState::Constant(1e-3), PhysState::Zero();
-        x0_ub << x0 + PhysState::Constant(1e-3), PhysState::Zero();
-    }
-
-    // OCP state trajectory [x; d] for a physical state trajectory x (for guesses).
-    static StateTrajectory augment(const PhysStateTrajectory& x)
-    {
-        StateTrajectory xa;
-        xa.template topRows<kNX>() = x;
-        xa.template bottomRows<kNX>().col(0).setZero();
-        for (int k = 1; k <= N; ++k) {
-            xa.template bottomRows<kNX>().col(k) = x.col(k) - x.col(k - 1);
-        }
-        return xa;
+        x0_lb = x0 - State::Constant(1e-3);
+        x0_ub = x0 + State::Constant(1e-3);
     }
 
     /*
@@ -130,7 +105,7 @@ public:
     // Furuta pendulum ODE x_dot = f(x, u; p) for x = [theta, phi, theta_dot, phi_dot],
     // u = [torque], p = [lp, mp, lr, mr]: B(theta) [theta_ddot; phi_ddot] = A(x, u).
     template<typename T>
-    phys_state_t<T> furuta_ode(const phys_state_t<T>& x, const input_t<T>& u) const
+    state_t<T> furuta_ode(const state_t<T>& x, const input_t<T>& u) const
     {
         using std::cos;
         using std::sin;
@@ -155,39 +130,39 @@ public:
 
         // [theta_ddot; phi_ddot] = adj(B) / det(B) * A
         const T det = b00 * b11 - b01 * b01;
-        phys_state_t<T> xDot;
+        state_t<T> xDot;
         xDot << thetaDot, phiDot, (b11 * a0 - b01 * a1) / det, (-b01 * a0 + b00 * a1) / det;
         return xDot;
     }
 
     /*
-     * Cost terms (as in FurutaNPOCP / furuta_cost.py), on physical states
+     * Cost terms (as in FurutaNPOCP / furuta_cost.py)
      */
     // Stage cost with the 2*pi-periodic half-angle lift on theta:
     // 2 * (1 - cos(theta)) == (2 * sin(theta / 2))^2.
     template<typename T>
-    T stage_cost(const phys_state_t<T>& x, const input_t<T>& u) const
+    T stage_cost(const state_t<T>& x, const input_t<T>& u) const
     {
         using std::cos;
-        phys_state_t<T> lifted;
+        state_t<T> lifted;
         lifted << T(2.0) * (T(1.0) - cos(x(0))), x(1) * x(1), x(2) * x(2), x(3) * x(3);
         return settings.costX.template cast<T>().dot(lifted)
                + settings.costU.template cast<T>().dot(u.cwiseProduct(u));
     }
 
-    // x_diff cost costXDiff . d^2 on the state change d = x_k - x_{k-1}.
+    // x_diff cost costXDiff . dx^2 on the state change dx = x_{k+1} - x_k.
     template<typename T>
-    T diff_cost(const phys_state_t<T>& d) const
+    T diff_cost(const state_t<T>& dx) const
     {
-        return settings.costXDiff.template cast<T>().dot(d.cwiseProduct(d));
+        return settings.costXDiff.template cast<T>().dot(dx.cwiseProduct(dx));
     }
 
     // LQR terminal cost eN^T P eN on the half-angle-lifted terminal state.
     template<typename T>
-    T terminal_cost(const phys_state_t<T>& xf) const
+    T terminal_cost(const state_t<T>& xf) const
     {
         using std::sin;
-        phys_state_t<T> eN;
+        state_t<T> eN;
         eN << T(2.0) * sin(xf(0) / T(2.0)), xf(1), xf(2), xf(3);
         return eN.dot(settings.terminalP.template cast<T>() * eN);
     }
@@ -205,9 +180,9 @@ public:
         return cost;
     }
 
-    // Softened state bounds g = [x - s; x + s] on the physical state, see apply_settings().
+    // Softened state bounds g = [x - s; x + s], see apply_settings().
     template<typename T>
-    ineq_constr_t<T> state_bound_constraints(const phys_state_t<T>& x, const param_t<T>& s) const
+    ineq_constr_t<T> state_bound_constraints(const state_t<T>& x, const param_t<T>& s) const
     {
         ineq_constr_t<T> g;
         g << x - s, x + s;
@@ -215,11 +190,12 @@ public:
     }
 
     /*
-     * laopt interface
+     * laopt interface (MultipleShootingXDiff: the Lagrange term gets x_{k+1})
      */
-    template<typename x_t, typename u_t, typename p_t, typename t0_t, typename tf_t, typename tau_t,
+    template<typename x_t, typename xn_t, typename u_t, typename p_t, typename t0_t, typename tf_t, typename tau_t,
             typename T = typename x_t::Scalar> // T is scalar type
     T lagrange_term_impl(const Eigen::MatrixBase<x_t>& x,
+                         const Eigen::MatrixBase<xn_t>& x_next,
                          const Eigen::MatrixBase<u_t>& u,
                          const Eigen::MatrixBase<p_t>& p,
                          const Eigen::MatrixBase<t0_t>& t0,
@@ -227,12 +203,11 @@ public:
                          const tau_t& tau)
     {
         unused(p, t0, tf, tau);
-        const state_t<T> xa(x);
-
-        // MultipleShooting adds h * lagrange with h = 1/N; scale by N so the
-        // objective is the plain sum over stages, as in furuta_cost.
-        return static_cast<double>(N) * (stage_cost<T>(xa.template head<kNX>(), input_t<T>(u))
-                                         + diff_cost<T>(xa.template tail<kNX>()));
+        // Continuous dynamics: the transcription weights the Lagrange term by
+        // h = 1/N; scale by N so the objective is the plain sum over stages, as
+        // in furuta_cost.
+        const state_t<T> xk(x);
+        return static_cast<double>(N) * (stage_cost<T>(xk, input_t<T>(u)) + diff_cost<T>(state_t<T>(x_next) - xk));
     }
 
     template<typename xf_t, typename p_t, typename t0_t, typename tf_t,
@@ -243,13 +218,9 @@ public:
                       const Eigen::MatrixBase<tf_t>& tf)
     {
         unused(t0, tf);
-        const state_t<T> xa(xf);
-        return terminal_cost<T>(xa.template head<kNX>()) + diff_cost<T>(xa.template tail<kNX>())
-               + slack_cost<T>(param_t<T>(p));
+        return terminal_cost<T>(state_t<T>(xf)) + slack_cost<T>(param_t<T>(p));
     }
 
-    // Continuous dynamics of the OCP state [x; d]: x_dot = f(x, u), d_dot = 2 f(x, u) - 2 d / dt
-    // (see the class comment: exact d_{k+1} = x_{k+1} - x_k under IRK2 with step dt).
     template<typename x_t, typename u_t, typename p_t, typename t0_t, typename tf_t, typename tau_t,
             typename T = typename x_t::Scalar> // T is scalar type
     state_t<T> dynamics_impl(const Eigen::MatrixBase<x_t>& x,
@@ -260,11 +231,7 @@ public:
                              const tau_t& tau)
     {
         unused(p, t0, tf, tau);
-        const state_t<T> xa(x);
-        const phys_state_t<T> f = furuta_ode<T>(xa.template head<kNX>(), input_t<T>(u));
-        state_t<T> xaDot;
-        xaDot << f, T(2.0) * f - T(2.0 / settings.dt) * xa.template tail<kNX>();
-        return xaDot;
+        return furuta_ode<T>(state_t<T>(x), input_t<T>(u));
     }
 
     template<typename x_t, typename u_t, typename p_t, typename t0_t, typename tf_t, typename tau_t,
@@ -277,7 +244,7 @@ public:
                                                  const tau_t& tau)
     {
         unused(u, t0, tf, tau);
-        return state_bound_constraints<T>(state_t<T>(x).template head<kNX>(), param_t<T>(p));
+        return state_bound_constraints<T>(state_t<T>(x), param_t<T>(p));
     }
 
     template<typename x_t, typename u_t, typename p_t, typename t0_t,
@@ -288,7 +255,7 @@ public:
                                                    const Eigen::MatrixBase<t0_t>& t0)
     {
         unused(u0, t0);
-        return state_bound_constraints<T>(state_t<T>(x0).template head<kNX>(), param_t<T>(p));
+        return state_bound_constraints<T>(state_t<T>(x0), param_t<T>(p));
     }
 
     template<typename xf_t, typename p_t, typename t0_t, typename tf_t,
@@ -299,7 +266,7 @@ public:
                                                    const Eigen::MatrixBase<tf_t>& tf)
     {
         unused(t0, tf);
-        return state_bound_constraints<T>(state_t<T>(xf).template head<kNX>(), param_t<T>(p));
+        return state_bound_constraints<T>(state_t<T>(xf), param_t<T>(p));
     }
 };
 

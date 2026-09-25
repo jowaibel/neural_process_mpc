@@ -1,6 +1,6 @@
 // Connects to the Python Qube simulator server (scripts/run_qube_server.py)
 // and drives it in closed loop with the laopt NP MPC (FurutaNPOcpEigen.hpp),
-// the laopt counterpart of run_furuta_np_mpc_client.cpp.
+// the laopt counterpart of run_furuta_np_casadi_client.cpp.
 //
 // The loop runs as fast as possible: as soon as a solve is done and its first
 // input is sent, the next solve starts from the newest state measurement
@@ -21,7 +21,7 @@
 #include <Eigen/Dense>
 
 #include "laopt/laopt.hpp"
-#include "laopt/tools/multiple_shooting.hpp"
+#include "npmpc/mpc/laopt/multiple_shooting_xdiff.hpp"
 
 #include "npmpc/mpc/laopt/FurutaNPOcpEigen.hpp"
 #include "npmpc/mpc/laopt/laopt_solver.hpp"
@@ -38,11 +38,11 @@ constexpr int N = 12; // must match horizon_steps in mpc_config.yaml
 /* Solver switch: IPOPT or SQP with PIQP as QP solver (settings in laopt_solver.hpp). */
 using npmpc::mpc::furuta_laopt::SolverType;
 
-constexpr SolverType kSolver = SolverType::IPOPT;
-// constexpr SolverType kSolver = SolverType::SQP_PIQP;
+// constexpr SolverType kSolver = SolverType::IPOPT;
+constexpr SolverType kSolver = SolverType::SQP_PIQP;
 
 using Ocp = npmpc::mpc::furuta_laopt::FurutaNPOCP<N>;
-using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
+using Transcription = laopt_tools::MultipleShootingXDiff<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
 using OptProblem = laopt::Problem<Transcription>;
 using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 
@@ -50,8 +50,8 @@ using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 // the first input is sent).
 constexpr int kMaxInitialSolves = 500;
 
-constexpr int NXP = npmpc::mpc::furuta_laopt::kNX;      // physical state size (Ocp::NX = 2 * NXP: [x; d])
-using StateTrajectory = Ocp::PhysStateTrajectory;       // physical states (NXP, N+1)
+constexpr int NXP = Ocp::NX;                            // state size
+using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
 // Cold-start input guess: constant at the lower bound (negative u drives
@@ -65,7 +65,7 @@ InputTrajectory coldStartU(const Ocp& ocp)
 // Cold-start state guess: the NP rollout of the input guess from x0, so the
 // guess satisfies the dynamics constraints exactly (instead of MPCController's
 // linear interpolation to [2pi,0,0,0], which violates them).
-StateTrajectory coldStartX(const Ocp& ocp, const Ocp::PhysState& x0, const InputTrajectory& u)
+StateTrajectory coldStartX(const Ocp& ocp, const Ocp::State& x0, const InputTrajectory& u)
 {
     return ocp.model.rollout<N>(x0, u, ocp.settings.z, ocp.settings.dt);
 }
@@ -118,14 +118,14 @@ int main(int argc, char** argv)
             std::cerr << "Received state of size " << state.x.size() << ", expected " << NXP << ".\n";
             return 1;
         }
-        const Ocp::PhysState x = Eigen::Map<const Ocp::PhysState>(state.x.data());
+        const Ocp::State x = Eigen::Map<const Ocp::State>(state.x.data());
 
         if (nSolves == 0) {
             tStart = state.t;
             // Cold start (dynamically consistent: X = NP rollout of U from x);
             // guesses must be set after the solver is constructed.
             const InputTrajectory uGuess = coldStartU(*ocp);
-            transcription->set_X_guess(Ocp::augment(coldStartX(*ocp, x, uGuess)));
+            transcription->set_X_guess(coldStartX(*ocp, x, uGuess));
             transcription->set_U_guess(uGuess); // typed as a trajectory: the overloads are ambiguous for NU = 1
             transcription->set_p_guess(Ocp::Param::Zero());
         }

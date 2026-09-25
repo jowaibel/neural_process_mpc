@@ -14,18 +14,16 @@
 
 namespace npmpc::mpc::furuta_laopt {
 
-inline constexpr int kNX = 4;                  // physical state [theta, phi, theta_dot, phi_dot]
-inline constexpr int kNXOcp = 2 * kNX;         // OCP state [x; d], d_k = x_k - x_{k-1} (for the x_diff cost)
+inline constexpr int kNX = 4;                  // state [theta, phi, theta_dot, phi_dot]
 inline constexpr int kNU = 1;                  // motor torque
-inline constexpr int kNP = kNX;                // one slack per physical state, shared by the whole horizon
+inline constexpr int kNP = kNX;                // one slack per state, shared by the whole horizon
 inline constexpr int kNG = 2 * kNX;            // softened state bounds: [x - s; x + s]
 inline constexpr int kNZ = 4;                  // NP latent size
 inline constexpr int kNPlant = 4;              // analytical model parameters [lp, mp, lr, mr]
 
 // Fixed-size counterpart of MPCParams/CostParams (params.hpp), read from the
-// MPC config YAML without going through CasADi types. All vectors are in
-// physical-state units (kNX). `z` (NP OCP) and `p` (equation OCP) are
-// optional; each OCP checks for the one it needs.
+// MPC config YAML without going through CasADi types. `z` (NP OCP) and `p`
+// (equation OCP) are optional; each OCP checks for the one it needs.
 struct FurutaOcpSettings {
     using StateVec = Eigen::Vector<double, kNX>;
     using InputVec = Eigen::Vector<double, kNU>;

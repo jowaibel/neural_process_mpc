@@ -18,7 +18,7 @@
 #include <Eigen/Dense>
 
 #include "laopt/laopt.hpp"
-#include "laopt/tools/multiple_shooting.hpp"
+#include "npmpc/mpc/laopt/multiple_shooting_xdiff.hpp"
 
 #include "npmpc/mpc/controller.hpp"
 #include "npmpc/mpc/laopt/FurutaNPOcpEigen.hpp"
@@ -41,28 +41,26 @@ using npmpc::mpc::furuta_laopt::SolverType;
 constexpr SolverType kSolver = SolverType::SQP_PIQP;
 
 using Ocp = npmpc::mpc::furuta_laopt::FurutaNPOCP<N>;
-using Transcription = laopt_tools::MultipleShooting<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
+using Transcription = laopt_tools::MultipleShootingXDiff<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
 using OptProblem = laopt::Problem<Transcription>;
 using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 constexpr const char* kSolverName = npmpc::mpc::furuta_laopt::solverName<Solver>();
 
-constexpr int NXP = npmpc::mpc::furuta_laopt::kNX;      // physical state size (Ocp::NX = 2 * NXP: [x; d])
-using StateTrajectory = Ocp::PhysStateTrajectory;       // physical states (NXP, N+1)
+constexpr int NXP = Ocp::NX;                            // state size
+using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
-// laopt objective as MultipleShooting assembles it: sum_k h * lagrange + mayer, h = 1/N,
-// on the OCP states [x; d] of the physical trajectory x.
+// laopt objective as MultipleShootingXDiff assembles it for discrete dynamics:
+// sum_k lagrange(x_k, x_{k+1}, u_k) + mayer (unweighted).
 double ocpObjective(Ocp& ocp, const StateTrajectory& x, const InputTrajectory& u, const Ocp::Param& p)
 {
     const Eigen::Vector<double, 1> t0 = Eigen::Vector<double, 1>::Constant(ocp.t0);
     const Eigen::Vector<double, 1> tf = Eigen::Vector<double, 1>::Constant(ocp.tf_lb);
-    const Ocp::StateTrajectory xa = Ocp::augment(x);
-    const double h = 1.0 / N;
     double obj = 0.0;
     for (int k = 0; k < N; ++k) {
-        obj += h * ocp.lagrange_term_impl(Ocp::State(xa.col(k)), Ocp::Input(u.col(k)), p, t0, tf, double(k) / N);
+        obj += ocp.lagrange_term_impl(Ocp::State(x.col(k)), Ocp::State(x.col(k + 1)), Ocp::Input(u.col(k)), p, t0, tf, double(k) / N);
     }
-    return obj + ocp.mayer_term_impl(Ocp::State(xa.col(N)), p, t0, tf);
+    return obj + ocp.mayer_term_impl(Ocp::State(x.col(N)), p, t0, tf);
 }
 
 // CasADi DM (rows = time steps) -> Eigen (columns = time steps).
@@ -77,9 +75,9 @@ Eigen::Matrix<double, Rows, Cols> fromCasadiTransposed(const casadi::DM& m)
 }
 
 // Cold start as in MPCController::warmStart: x linear from x0 to [2pi,0,0,0], u = 0.
-StateTrajectory coldStartX(const Ocp::PhysState& x0)
+StateTrajectory coldStartX(const Ocp::State& x0)
 {
-    const Ocp::PhysState target(2.0 * M_PI, 0.0, 0.0, 0.0);
+    const Ocp::State target(2.0 * M_PI, 0.0, 0.0, 0.0);
     StateTrajectory x;
     for (int i = 0; i <= N; ++i) {
         const double t = static_cast<double>(i) / N;
@@ -103,7 +101,7 @@ int main(int argc, char** argv)
 
     /* laopt OCP */
     std::shared_ptr<Ocp> ocp = std::make_shared<Ocp>(weightsPath, mpcConfigPath);
-    const Ocp::PhysState x0 = ocp->settings.x0;
+    const Ocp::State x0 = ocp->settings.x0;
 
     /* CasADi reference, same config (incl. x_diff) */
     npmpc::nps::NeuralProcess npCasadi = npmpc::nps::loadNeuralProcessFromYaml(weightsPath);
@@ -148,7 +146,7 @@ int main(int argc, char** argv)
     npmpc::mpc::furuta_laopt::configureSolver(solver);
 
     // Guesses must be set after the solver is constructed (see MultipleShooting::set_X_guess).
-    transcription->set_X_guess(Ocp::augment(coldStartX(x0)));
+    transcription->set_X_guess(coldStartX(x0));
     transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: Input/InputTrajectory overloads are ambiguous for NU = 1
     transcription->set_p_guess(Ocp::Param::Zero());
 
@@ -156,7 +154,7 @@ int main(int argc, char** argv)
     const auto result1 = npmpc::mpc::furuta_laopt::solveOnce(solver);
     const double solve1Ms = duration<double, std::milli>(steady_clock::now() - tSolve0).count();
 
-    const StateTrajectory xLaopt = transcription->get_X_opt().topRows<NXP>(); // physical part of [x; d]
+    const StateTrajectory xLaopt = transcription->get_X_opt();
     const InputTrajectory uLaopt = transcription->get_U_opt();
 
     npmpc::mpc::problem::FurutaNPMPC mpc(&npCasadi, params.z, params.cost);
@@ -185,14 +183,14 @@ int main(int argc, char** argv)
     }
 
     // -- 3. Re-solve from a new x0, reusing tape/problem/solver (warm start from solve 1) --
-    const Ocp::PhysState x0b(M_PI - 0.2, 0.1, 0.5, -0.3);
+    const Ocp::State x0b(M_PI - 0.2, 0.1, 0.5, -0.3);
     ocp->set_initial_state(x0b);
 
     const steady_clock::time_point tSolve1 = steady_clock::now();
     const auto result2 = npmpc::mpc::furuta_laopt::solveOnce(solver);
     const double solve2Ms = duration<double, std::milli>(steady_clock::now() - tSolve1).count();
 
-    const Ocp::PhysState x0Sol = transcription->get_X_opt().col(0).head<NXP>();
+    const Ocp::State x0Sol = transcription->get_X_opt().col(0);
     const double x0Err = (x0Sol - x0b).cwiseAbs().maxCoeff();
     std::cout << "\n[solve 2] " << kSolverName << " status: " << result2.status << "  solve: " << solve2Ms << " ms\n";
     std::cout << "x0 requested: " << x0b.transpose() << "\n";
