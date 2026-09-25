@@ -48,6 +48,16 @@ target_link_libraries(eval_furuta_np_laopt PRIVATE npmpc laopt::laopt ${Ipopt_LI
 target_include_directories(eval_furuta_np_laopt PRIVATE ${Ipopt_INCLUDE_DIRS})
 target_compile_definitions(eval_furuta_np_laopt PRIVATE LAOPT_WITH_IPOPT LAOPT_WITH_PIQP NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
+add_executable(eval_furuta_eq_laopt src_cpp/tests/eval_furuta_eq_laopt.cpp)
+target_link_libraries(eval_furuta_eq_laopt PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES} piqp::piqp_header_only)
+target_include_directories(eval_furuta_eq_laopt PRIVATE ${Ipopt_INCLUDE_DIRS})
+target_compile_definitions(eval_furuta_eq_laopt PRIVATE LAOPT_WITH_IPOPT LAOPT_WITH_PIQP NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+add_executable(run_furuta_eq_laopt_client src_cpp/tests/run_furuta_eq_laopt_client.cpp)
+target_link_libraries(run_furuta_eq_laopt_client PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES} piqp::piqp_header_only)
+target_include_directories(run_furuta_eq_laopt_client PRIVATE ${Ipopt_INCLUDE_DIRS})
+target_compile_definitions(run_furuta_eq_laopt_client PRIVATE LAOPT_WITH_IPOPT LAOPT_WITH_PIQP NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
 add_executable(run_furuta_np_laopt_client src_cpp/tests/run_furuta_np_laopt_client.cpp)
 target_link_libraries(run_furuta_np_laopt_client PRIVATE npmpc laopt::laopt ${Ipopt_LIBRARIES} piqp::piqp_header_only)
 target_include_directories(run_furuta_np_laopt_client PRIVATE ${Ipopt_INCLUDE_DIRS})
