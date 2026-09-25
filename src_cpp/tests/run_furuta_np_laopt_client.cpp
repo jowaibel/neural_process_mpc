@@ -61,20 +61,17 @@ constexpr int NXP = Ocp::NX;                            // state size
 using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
 
-// Cold-start input guess: constant at the lower bound (negative u drives
-// positive theta_dot), to leave the symmetric hanging position where the
-// Gauss-Newton SQP sees no gradient.
-InputTrajectory coldStartU(const Ocp& ocp)
+// Cold start as in MPCController.warm_start: x linear from x0 to [2pi,0,0,0], u = 0
+// (the same guess as run_furuta_np_casadi_client and the equation-based clients).
+StateTrajectory coldStartX(const Ocp::State& x0)
 {
-    return InputTrajectory::Constant(ocp.settings.uLb(0));
-}
-
-// Cold-start state guess: the NP rollout of the input guess from x0, so the
-// guess satisfies the dynamics constraints exactly (instead of MPCController's
-// linear interpolation to [2pi,0,0,0], which violates them).
-StateTrajectory coldStartX(const Ocp& ocp, const Ocp::State& x0, const InputTrajectory& u)
-{
-    return ocp.model.rollout<N>(x0, u, ocp.settings.z, ocp.settings.dt);
+    const Ocp::State target(2.0 * M_PI, 0.0, 0.0, 0.0);
+    StateTrajectory x;
+    for (int i = 0; i <= N; ++i) {
+        const double t = static_cast<double>(i) / N;
+        x.col(i) = x0 + t * (target - x0);
+    }
+    return x;
 }
 
 } // namespace
@@ -129,11 +126,9 @@ int main(int argc, char** argv)
 
         if (nSolves == 0) {
             tStart = state.t;
-            // Cold start (dynamically consistent: X = NP rollout of U from x);
-            // guesses must be set after the solver is constructed.
-            const InputTrajectory uGuess = coldStartU(*ocp);
-            transcription->set_X_guess(coldStartX(*ocp, x, uGuess));
-            transcription->set_U_guess(uGuess); // typed as a trajectory: the overloads are ambiguous for NU = 1
+            // Cold start; guesses must be set after the solver is constructed.
+            transcription->set_X_guess(coldStartX(x));
+            transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: overloads are ambiguous for NU = 1
             transcription->set_p_guess(Ocp::Param::Zero());
         }
         if (state.t - tStart >= runTime) {

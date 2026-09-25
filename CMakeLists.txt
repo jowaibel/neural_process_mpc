@@ -74,6 +74,10 @@ add_executable(run_furuta_np_casadi_client src_cpp/tests/run_furuta_np_casadi_cl
 target_link_libraries(run_furuta_np_casadi_client PRIVATE npmpc)
 target_compile_definitions(run_furuta_np_casadi_client PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
+add_executable(eval_furuta_np_casadi src_cpp/tests/eval_furuta_np_casadi.cpp)
+target_link_libraries(eval_furuta_np_casadi PRIVATE npmpc)
+target_compile_definitions(eval_furuta_np_casadi PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
 add_executable(eval_furuta_eq_casadi src_cpp/tests/eval_furuta_eq_casadi.cpp)
 target_link_libraries(eval_furuta_eq_casadi PRIVATE npmpc)
 target_compile_definitions(eval_furuta_eq_casadi PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")

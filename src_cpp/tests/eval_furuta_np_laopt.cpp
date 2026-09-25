@@ -1,32 +1,32 @@
-// Validates the laopt OCP (FurutaNPOcpEigen.hpp) against the CasADi/Opti path:
-//  1. Cost check: the OCP's objective terms on an NP rollout must equal the
-//     CasADi furutaCost.
-//  2. Solve: MultipleShooting + IPOPT or SQP/PIQP (switch: kSolver) from the MPCController cold start must
-//     reproduce the CasADi MPCController solution for the x0 in mpc_config.yaml.
-//  3. Re-solve from a different x0 without re-taping (the x0 bounds are
-//     changed on the OCP between solves).
-// Both sides use the full cost from mpc_config.yaml, including cost.x_diff
-// (in the laopt OCP via the state change d = x_k - x_{k-1} as extra states).
+// Validates the NP laopt OCP (FurutaNPOcpEigen.hpp) against the Python
+// FurutaNPMPC solution (YAML written by
+//   scripts/eval_furuta_mpc.py --method neural --z <z> --dump model/np_python_solution.yaml
+// with the same z and config as model/mpc_config.yaml, written by
+//   scripts/export_mpc_config.py --z <z>),
+// the NP counterpart of eval_furuta_eq_laopt.cpp:
+//  1. Dynamics: the residual x_{k+1} - FurutaNPEigen::step(x_k, u_k) on the
+//     Python solution must be at solver-tolerance level.
+//  2. Cost: the laopt objective at the Python solution must equal Python's objective.
+//  3. Solve, with IPOPT and with SQP (PIQP): from the same cold start as
+//     MPCController.warm_start (x linear from x0 to [2pi,0,0,0], u = 0),
+//     re-solving until converged like Python's warm-start retries, the solution
+//     must match the Python one.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include <casadi/casadi.hpp>
 #include <Eigen/Dense>
+#include <yaml-cpp/yaml.h>
 
 #include "laopt/laopt.hpp"
 #include "npmpc/mpc/laopt/multiple_shooting_xdiff.hpp"
 
-#include "npmpc/mpc/controller.hpp"
 #include "npmpc/mpc/laopt/FurutaNPOcpEigen.hpp"
 #include "npmpc/mpc/laopt/laopt_solver.hpp"
-#include "npmpc/mpc/mpc_config_io.hpp"
-#include "npmpc/mpc/problem/FurutaNPMPC.hpp"
-#include "npmpc/mpc/problem/furuta_cost.hpp"
-#include "npmpc/nps/weights_io.hpp"
 
 #ifndef NPMPC_PROJECT_ROOT
 #define NPMPC_PROJECT_ROOT "."
@@ -34,21 +34,43 @@
 
 namespace {
 
-constexpr int N = 12; // must match horizon_steps in mpc_config.yaml
+using namespace npmpc::mpc::furuta_laopt;
 
-/* Solver switch: IPOPT or SQP with PIQP as QP solver (settings in laopt_solver.hpp). */
-using npmpc::mpc::furuta_laopt::SolverType;
-constexpr SolverType kSolver = SolverType::SQP_PIQP;
+constexpr int N = 12; // must match horizon_steps in the config
+constexpr int kMaxSolves = 100; // re-solves until converged, as MPCController.warm_start's retries
 
-using Ocp = npmpc::mpc::furuta_laopt::FurutaNPOCP<N>;
+using Ocp = FurutaNPOCP<N>;
 using Transcription = laopt_tools::MultipleShootingXDiff<Ocp, N, laopt::ERK4>; // integrator unused (DiscreteDynamics)
 using OptProblem = laopt::Problem<Transcription>;
-using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
-constexpr const char* kSolverName = npmpc::mpc::furuta_laopt::solverName<Solver>();
 
-constexpr int NXP = Ocp::NX;                            // state size
 using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
 using InputTrajectory = Transcription::InputTrajectory; // (NU, N)
+
+struct PythonSolution {
+    Ocp::State x0;
+    StateTrajectory x;
+    InputTrajectory u;
+    double objective;
+};
+
+PythonSolution loadPythonSolution(const std::string& path)
+{
+    YAML::Node root = YAML::LoadFile(path);
+    PythonSolution py;
+    auto x0 = root["x0"].as<std::vector<double>>();
+    for (int j = 0; j < kNX; ++j) { py.x0(j) = x0.at(j); }
+    auto x = root["x"].as<std::vector<std::vector<double>>>();
+    auto u = root["u"].as<std::vector<std::vector<double>>>();
+    if (x.size() != static_cast<size_t>(N + 1) || u.size() != static_cast<size_t>(N)) {
+        throw std::runtime_error("loadPythonSolution: " + path + " has a different horizon than N = " + std::to_string(N));
+    }
+    for (int k = 0; k <= N; ++k) {
+        for (int j = 0; j < kNX; ++j) { py.x(j, k) = x[k].at(j); }
+    }
+    for (int k = 0; k < N; ++k) { py.u(0, k) = u[k].at(0); }
+    py.objective = root["objective"].as<double>();
+    return py;
+}
 
 // laopt objective as MultipleShootingXDiff assembles it for discrete dynamics:
 // sum_k lagrange(x_k, x_{k+1}, u_k) + mayer (unweighted).
@@ -63,18 +85,7 @@ double ocpObjective(Ocp& ocp, const StateTrajectory& x, const InputTrajectory& u
     return obj + ocp.mayer_term_impl(Ocp::State(x.col(N)), p, t0, tf);
 }
 
-// CasADi DM (rows = time steps) -> Eigen (columns = time steps).
-template<int Rows, int Cols>
-Eigen::Matrix<double, Rows, Cols> fromCasadiTransposed(const casadi::DM& m)
-{
-    Eigen::Matrix<double, Rows, Cols> out;
-    for (int r = 0; r < Rows; ++r) {
-        for (int c = 0; c < Cols; ++c) { out(r, c) = static_cast<double>(m(c, r)); }
-    }
-    return out;
-}
-
-// Cold start as in MPCController::warmStart: x linear from x0 to [2pi,0,0,0], u = 0.
+// Cold start as in MPCController.warm_start: x linear from x0 to [2pi,0,0,0], u = 0.
 StateTrajectory coldStartX(const Ocp::State& x0)
 {
     const Ocp::State target(2.0 * M_PI, 0.0, 0.0, 0.0);
@@ -86,124 +97,108 @@ StateTrajectory coldStartX(const Ocp::State& x0)
     return x;
 }
 
+// Solves the OCP with solver S from the cold start (re-solving until
+// converged) and compares with the Python solution. Returns true on a match.
+template<SolverType S>
+bool solveAndCompare(const std::string& weightsPath, const std::string& mpcConfigPath, const PythonSolution& py)
+{
+    using Solver = SolverFor<S, OptProblem>;
+    using namespace std::chrono;
+
+    std::shared_ptr<Ocp> ocp = std::make_shared<Ocp>(weightsPath, mpcConfigPath);
+    ocp->set_initial_state(py.x0);
+    std::shared_ptr<Transcription> transcription = std::make_shared<Transcription>(ocp);
+    std::shared_ptr<OptProblem> optProblem = std::make_shared<OptProblem>(transcription); // generates the tape
+    Solver solver(optProblem);
+    configureSolver(solver);
+
+    // Guesses must be set after the solver is constructed (see MultipleShooting::set_X_guess).
+    transcription->set_X_guess(coldStartX(py.x0));
+    transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: overloads are ambiguous for NU = 1
+    transcription->set_p_guess(Ocp::Param::Zero());
+
+    const steady_clock::time_point t0 = steady_clock::now();
+    SolveResult result = solveOnce(solver);
+    int nSolves = 1;
+    while (!result.converged && nSolves < kMaxSolves) {
+        result = solveOnce(solver);
+        ++nSolves;
+    }
+    const double ms = duration<double, std::milli>(steady_clock::now() - t0).count();
+
+    const StateTrajectory x = transcription->get_X_opt();
+    const InputTrajectory u = transcription->get_U_opt();
+    const double obj = ocpObjective(*ocp, x, u, transcription->get_p_opt());
+    const double xDiff = (x - py.x).cwiseAbs().maxCoeff();
+    const double uDiff = (u - py.u).cwiseAbs().maxCoeff();
+
+    std::cout << "\n[" << solverName<Solver>() << "] " << result.status << " after " << nSolves
+              << " solve() calls, " << ms << " ms\n";
+    std::cout << "U laopt:  " << u << "\n";
+    std::cout << "U Python: " << py.u << "\n";
+    std::cout << "objective laopt: " << obj << "  Python: " << py.objective << "\n";
+    std::cout << "max |X laopt - X Python| = " << xDiff << ",  max |U laopt - U Python| = " << uDiff << "\n";
+
+    bool ok = true;
+    if (!result.converged) {
+        std::cerr << "[" << solverName<Solver>() << "] did not converge\n";
+        ok = false;
+    }
+    if (xDiff > 1e-3 || uDiff > 1e-3) {
+        std::cerr << "[" << solverName<Solver>() << "] MISMATCH with Python solution\n";
+        ok = false;
+    }
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
-    using namespace std::chrono;
-
+    std::cout << std::unitbuf; // unbuffered, so progress is visible even if a later step crashes
     const std::string weightsPath =
         argc > 1 ? argv[1] : std::string(NPMPC_PROJECT_ROOT) + "/model/np_weights.yaml";
     const std::string mpcConfigPath =
         argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config.yaml";
+    const std::string pythonSolutionPath =
+        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/np_python_solution.yaml";
 
+    const PythonSolution py = loadPythonSolution(pythonSolutionPath);
+    Ocp ocp(weightsPath, mpcConfigPath);
     bool ok = true;
 
-    /* laopt OCP */
-    std::shared_ptr<Ocp> ocp = std::make_shared<Ocp>(weightsPath, mpcConfigPath);
-    const Ocp::State x0 = ocp->settings.x0;
-
-    /* CasADi reference, same config (incl. x_diff) */
-    npmpc::nps::NeuralProcess npCasadi = npmpc::nps::loadNeuralProcessFromYaml(weightsPath);
-    npmpc::mpc::problem::MPCParams params = npmpc::mpc::loadMPCParamsFromYaml(mpcConfigPath);
-
-    // -- 1. Cost check on an NP rollout --
+    // -- 1. Dynamics: residual of the NP step on the Python solution --
     {
-        InputTrajectory u;
-        for (int k = 0; k < N; ++k) { u(0, k) = 0.04 * std::sin(0.7 * k); }
-        const StateTrajectory x = ocp->model.rollout<N>(x0, u, ocp->settings.z, ocp->settings.dt);
-
-        const double objLaopt = ocpObjective(*ocp, x, u, Ocp::Param::Zero());
-
-        casadi::MX xSym = casadi::MX::sym("x", N + 1, NXP);
-        casadi::MX uSym = casadi::MX::sym("u", N, Ocp::NU);
-        casadi::Function costFn("furuta_cost", {xSym, uSym},
-                                {npmpc::mpc::problem::furutaCost(xSym, uSym, params.cost)});
-        casadi::DM xVal = casadi::DM::zeros(N + 1, NXP);
-        casadi::DM uVal = casadi::DM::zeros(N, Ocp::NU);
-        for (int k = 0; k <= N; ++k) {
-            for (int j = 0; j < NXP; ++j) { xVal(k, j) = x(j, k); }
+        double maxResidual = 0.0;
+        for (int k = 0; k < N; ++k) {
+            const Ocp::State xNext = ocp.model.step<double>(Ocp::State(py.x.col(k)), Ocp::Input(py.u.col(k)),
+                                                            ocp.settings.z, ocp.settings.dt);
+            maxResidual = std::max(maxResidual, (xNext - py.x.col(k + 1)).cwiseAbs().maxCoeff());
         }
-        for (int k = 0; k < N; ++k) { uVal(k, 0) = u(0, k); }
-        const double objCasadi = static_cast<double>(costFn(std::vector<casadi::DM>{xVal, uVal}).at(0));
+        std::cout << "[dynamics] max NP-step residual on the Python solution: " << maxResidual << "\n";
+        if (maxResidual > 1e-5) {
+            std::cerr << "[dynamics] MISMATCH: the Eigen NP step does not reproduce the Python dynamics\n";
+            ok = false;
+        }
+    }
 
-        const double relDiff = std::abs(objLaopt - objCasadi) / std::max(1.0, std::abs(objCasadi));
-        std::cout.precision(17);
-        std::cout << "[cost] CasADi: " << objCasadi << "  laopt OCP: " << objLaopt << "  rel diff: " << relDiff << "\n";
-        if (relDiff > 1e-12) {
+    // -- 2. Cost at the Python solution (slack 0) --
+    {
+        const double obj = ocpObjective(ocp, py.x, py.u, Ocp::Param::Zero());
+        const double relDiff = std::abs(obj - py.objective) / std::max(1.0, std::abs(py.objective));
+        std::cout.precision(12);
+        std::cout << "[cost] Python: " << py.objective << "  laopt OCP: " << obj << "  rel diff: " << relDiff << "\n";
+        std::cout.precision(6);
+        if (relDiff > 1e-6) {
             std::cerr << "[cost] MISMATCH\n";
             ok = false;
         }
-        std::cout.precision(6);
     }
 
-    // -- 2. Solve from the cold start and compare with CasADi MPCController --
-    std::shared_ptr<Transcription> transcription = std::make_shared<Transcription>(ocp);
+    // -- 3. Solve with both solvers --
+    ok = solveAndCompare<SolverType::IPOPT>(weightsPath, mpcConfigPath, py) && ok;
+    ok = solveAndCompare<SolverType::SQP_PIQP>(weightsPath, mpcConfigPath, py) && ok;
 
-    std::shared_ptr<OptProblem> optProblem = std::make_shared<OptProblem>(transcription); // generates the tape
-
-    Solver solver(optProblem);
-    npmpc::mpc::furuta_laopt::configureSolver(solver);
-
-    // Guesses must be set after the solver is constructed (see MultipleShooting::set_X_guess).
-    transcription->set_X_guess(coldStartX(x0));
-    transcription->set_U_guess(InputTrajectory(InputTrajectory::Zero())); // typed: Input/InputTrajectory overloads are ambiguous for NU = 1
-    transcription->set_p_guess(Ocp::Param::Zero());
-
-    const steady_clock::time_point tSolve0 = steady_clock::now();
-    const auto result1 = npmpc::mpc::furuta_laopt::solveOnce(solver);
-    const double solve1Ms = duration<double, std::milli>(steady_clock::now() - tSolve0).count();
-
-    const StateTrajectory xLaopt = transcription->get_X_opt();
-    const InputTrajectory uLaopt = transcription->get_U_opt();
-
-    npmpc::mpc::problem::FurutaNPMPC mpc(&npCasadi, params.z, params.cost);
-    npmpc::mpc::MPCController controller(mpc, params);
-    controller.warmStart(params.x0.T());
-    const StateTrajectory xCasadi = fromCasadiTransposed<NXP, N + 1>(controller.lastX());
-    const InputTrajectory uCasadi = fromCasadiTransposed<Ocp::NU, N>(controller.lastU());
-
-    const double xDiff = (xLaopt - xCasadi).cwiseAbs().maxCoeff();
-    const double uDiff = (uLaopt - uCasadi).cwiseAbs().maxCoeff();
-
-    std::cout << "\n[solve 1] " << kSolverName << " status: " << result1.status
-              << "  solve: " << solve1Ms << " ms\n";
-    std::cout << "X laopt (rows = time steps):\n" << xLaopt.transpose() << "\n";
-    std::cout << "U laopt: " << uLaopt << "\n";
-    std::cout << "U CasADi: " << uCasadi << "\n";
-    std::cout << "slack laopt: " << transcription->get_p_opt().transpose() << "\n";
-    std::cout << "max |X laopt - X CasADi| = " << xDiff << ",  max |U laopt - U CasADi| = " << uDiff << "\n";
-    if (!result1.converged) {
-        std::cerr << "[solve 1] " << kSolverName << " did not converge\n";
-        ok = false;
-    }
-    if (xDiff > 1e-4 || uDiff > 1e-4) {
-        std::cerr << "[solve 1] MISMATCH with CasADi solution\n";
-        ok = false;
-    }
-
-    // -- 3. Re-solve from a new x0, reusing tape/problem/solver (warm start from solve 1) --
-    const Ocp::State x0b(M_PI - 0.2, 0.1, 0.5, -0.3);
-    ocp->set_initial_state(x0b);
-
-    const steady_clock::time_point tSolve1 = steady_clock::now();
-    const auto result2 = npmpc::mpc::furuta_laopt::solveOnce(solver);
-    const double solve2Ms = duration<double, std::milli>(steady_clock::now() - tSolve1).count();
-
-    const Ocp::State x0Sol = transcription->get_X_opt().col(0);
-    const double x0Err = (x0Sol - x0b).cwiseAbs().maxCoeff();
-    std::cout << "\n[solve 2] " << kSolverName << " status: " << result2.status << "  solve: " << solve2Ms << " ms\n";
-    std::cout << "x0 requested: " << x0b.transpose() << "\n";
-    std::cout << "x0 solution:  " << x0Sol.transpose() << "  (max err " << x0Err << ")\n";
-    if (!result2.converged) {
-        std::cerr << "[solve 2] " << kSolverName << " did not converge\n";
-        ok = false;
-    }
-    if (x0Err > 1e-3 + 1e-6) {
-        std::cerr << "[solve 2] x0 bounds changed on the OCP were NOT picked up by the solver\n";
-        ok = false;
-    }
-
-    std::cout << "\n" << (ok ? "OK: laopt OCP matches CasADi reference." : "FAILED") << std::endl;
+    std::cout << "\n" << (ok ? "OK: NP laopt OCP matches the Python FurutaNPMPC." : "FAILED") << std::endl;
     return ok ? 0 : 1;
 }
