@@ -10,6 +10,9 @@ and, in newer dumps:
   solve_t  (m,)  wall-clock arrival time of each input that reported a solve time
   solve_ms (m,)  MPC computation time of that solve (ms), plotted lower right
   state_period, sim_period ()  state-stream and simulator integration periods (s)
+  pred_t (k,), pred_x (k, N+1, 4), pred_u (k, N, 1)  the logged open-loop MPC
+      predictions (pred_t: time of the state each was solved from); overlaid on
+      the state and torque plots, with a marker on each closed-loop state solved from
 """
 import argparse
 from pathlib import Path
@@ -31,6 +34,7 @@ def display_path(path: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', help='Path to the .npz file written by run_qube_server.py --dump')
+    parser.add_argument('--no-pred', action='store_true', help='Do not plot the logged open-loop predictions.')
     args = parser.parse_args()
 
     d = np.load(args.path, allow_pickle=True)
@@ -53,6 +57,32 @@ def main():
     ax_u.set_ylabel(r'arm torque $\tau$ (Nm)')
     ax_u.set_xlabel('Time (s)')
     ax_u.grid(True, lw=0.3)
+
+    # Logged open-loop MPC predictions (run_qube_server.py --pred-count/--pred-period),
+    # prediction node k at t_state + k * dt, and a marker on the closed-loop
+    # state each prediction was solved from.
+    if not args.no_pred and 'pred_x' in d.files and d['pred_x'].size > 0:
+        pred_t = d['pred_t'] - d['t'][0]
+        pred_x = d['pred_x']              # (k, N+1, 4)
+        pred_u = d['pred_u']              # (k, N, 1)
+        dt = float(d['dt'])
+        n_nodes = pred_x.shape[1]
+        style = dict(c='C3', lw=0.8, ms=3, zorder=2)
+        # Closed-loop sample the prediction started from (the server logs each
+        # state at the same time t it sends it, so pred_t matches a sample).
+        start_idx = np.clip(np.searchsorted(t, pred_t - 1e-9), 0, len(t) - 1)
+        for j in range(len(pred_t)):
+            t_nodes = pred_t[j] + dt * np.arange(n_nodes)
+            for i, ax in enumerate(state_axes):
+                ax.plot(t_nodes, pred_x[j, :, i], '.-', **style)
+            ax_u.step(t_nodes[:-1], pred_u[j, :, 0], where='post', c='C3', lw=0.8, zorder=2)
+            ax_u.plot(t_nodes[:-1], pred_u[j, :, 0], '.', c='C3', ms=3, zorder=2)
+        for i, ax in enumerate(state_axes):
+            ax.plot(t[start_idx], x[start_idx, i], 'o', c='k', ms=4, zorder=3)
+        state_axes[0].plot([], [], c='C0', lw=1.2, label='closed loop')
+        state_axes[0].plot([], [], '.-', label=f'open-loop predictions ({len(pred_t)})', **style)
+        state_axes[0].plot([], [], 'o', c='k', ms=4, label='closed-loop state solved from')
+        state_axes[0].legend(loc='best', fontsize=7)
 
     ax_c = axes[2, 1]
     if 'solve_ms' in d.files and d['solve_ms'].size > 0:

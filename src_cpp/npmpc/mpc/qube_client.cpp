@@ -80,17 +80,49 @@ double extractNumber(const std::string& json, const std::string& key) {
     return std::stod(json.substr(colon + 1, end - colon - 1));
 }
 
-std::string encodeInput(const std::vector<double>& u, std::optional<double> solveMs) {
-    std::ostringstream oss;
-    oss << std::setprecision(17);
-    oss << "{\"u\":[";
-    for (size_t i = 0; i < u.size(); ++i) {
+void encodeArray(std::ostringstream& oss, const std::vector<double>& values) {
+    oss << "[";
+    for (size_t i = 0; i < values.size(); ++i) {
         if (i > 0) oss << ",";
-        oss << u[i];
+        oss << values[i];
     }
     oss << "]";
+}
+
+void encodeArray2d(std::ostringstream& oss, const std::vector<std::vector<double>>& rows) {
+    oss << "[";
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i > 0) oss << ",";
+        encodeArray(oss, rows[i]);
+    }
+    oss << "]";
+}
+
+// True if the top-level JSON field `key` is present and `true`.
+bool extractFlag(const std::string& json, const std::string& key) {
+    size_t keyPos = json.find("\"" + key + "\"");
+    if (keyPos == std::string::npos) {
+        return false;
+    }
+    size_t colon = json.find(':', keyPos);
+    size_t value = json.find_first_not_of(" \t", colon + 1);
+    return value != std::string::npos && json.compare(value, 4, "true") == 0;
+}
+
+std::string encodeInput(const std::vector<double>& u, std::optional<double> solveMs,
+                        const MpcPrediction* prediction) {
+    std::ostringstream oss;
+    oss << std::setprecision(17);
+    oss << "{\"u\":";
+    encodeArray(oss, u);
     if (solveMs.has_value()) {
         oss << ",\"solve_ms\":" << *solveMs;
+    }
+    if (prediction != nullptr) {
+        oss << ",\"t_state\":" << prediction->tState << ",\"x_pred\":";
+        encodeArray2d(oss, prediction->x);
+        oss << ",\"u_pred\":";
+        encodeArray2d(oss, prediction->u);
     }
     oss << "}";
     return oss.str();
@@ -147,6 +179,7 @@ bool QubeClient::receiveState(QubeState& state) {
 
     state.x = extractArray(payload, "x");
     state.t = extractNumber(payload, "t");
+    state.predictionRequested = extractFlag(payload, "pred");
     return true;
 }
 
@@ -170,8 +203,9 @@ bool QubeClient::receiveLatestState(QubeState& state, int* skipped) {
     return true;
 }
 
-void QubeClient::sendInput(const std::vector<double>& u, std::optional<double> solveMs) {
-    std::string payload = encodeInput(u, solveMs);
+void QubeClient::sendInput(const std::vector<double>& u, std::optional<double> solveMs,
+                           const MpcPrediction* prediction) {
+    std::string payload = encodeInput(u, solveMs, prediction);
     uint32_t lengthNet = htonl(static_cast<uint32_t>(payload.size()));
     sendAll(socketFd_, reinterpret_cast<const char*>(&lengthNet), sizeof(lengthNet));
     sendAll(socketFd_, payload.data(), payload.size());

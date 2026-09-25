@@ -7,6 +7,12 @@
 
 namespace npmpc::mpc {
 
+namespace {
+// Max solve() attempts per warmStart: on failure, retry from the last iterate
+// (Python's warm_start uses 100).
+constexpr int kMaxSolveAttempts = 1;
+} // namespace
+
 MPCController::MPCController(problem::MPCBase& mpc, problem::MPCParams params)
     : mpc_(mpc), params_(std::move(params)) {
     buildOptimization();
@@ -46,22 +52,41 @@ void MPCController::buildOptimization() {
     problem_.minimize(cost);
 }
 
+void MPCController::setColdStartGuess(const casadi::DM& x0) {
+    // Linearly interpolate x toward the upright equilibrium, zero u -- as in
+    // Python's warm_start().
+    const int N = params_.horizonSteps;
+    casadi::DM uInit = casadi::DM::zeros(N, params_.uSize);
+    casadi::DM target = casadi::DM({2.0 * M_PI, 0.0, 0.0, 0.0}).T();
+    casadi::DM xInit = casadi::DM::zeros(N + 1, params_.xSize);
+    for (casadi_int i = 0; i <= N; ++i) {
+        double t = static_cast<double>(i) / static_cast<double>(N);
+        xInit(i, casadi::Slice()) = x0 + t * (target - x0);
+    }
+    problem_.set_initial(x_, xInit);
+    problem_.set_initial(u_, uInit);
+}
+
+void MPCController::prepare(const casadi::DM& x0) {
+    // One cold-start solve so that Opti builds the NLP solver, CasADi
+    // generates the derivative functions and IPOPT initializes -- all done
+    // lazily on the first solve() and cached afterwards.
+    problem_.set_value(x0Param_, x0);
+    setColdStartGuess(x0);
+    solveWithRetry();
+
+    // Forget the solution, so that the next warmStart cold-starts as before.
+    lastX_ = casadi::DM();
+    lastU_ = casadi::DM();
+    lastSlack_ = casadi::DM();
+    lastLamG_ = casadi::DM();
+}
+
 void MPCController::warmStart(const casadi::DM& x0) {
     problem_.set_value(x0Param_, x0);
 
     if (lastX_.is_empty()) {
-        // Cold start: linearly interpolate x toward the upright
-        // equilibrium, zero u -- as in Python's warm_start().
-        const int N = params_.horizonSteps;
-        casadi::DM uInit = casadi::DM::zeros(N, params_.uSize);
-        casadi::DM target = casadi::DM({2.0 * M_PI, 0.0, 0.0, 0.0}).T();
-        casadi::DM xInit = casadi::DM::zeros(N + 1, params_.xSize);
-        for (casadi_int i = 0; i <= N; ++i) {
-            double t = static_cast<double>(i) / static_cast<double>(N);
-            xInit(i, casadi::Slice()) = x0 + t * (target - x0);
-        }
-        problem_.set_initial(x_, xInit);
-        problem_.set_initial(u_, uInit);
+        setColdStartGuess(x0);
     } else {
         // Warm start from the previous solution, reused as-is (no
         // shifting/delay compensation).
@@ -75,25 +100,45 @@ void MPCController::warmStart(const casadi::DM& x0) {
 
 void MPCController::solveWithRetry() {
     bool solved = false;
-    for (int attempt = 0; attempt < 100 && !solved; ++attempt) {
+    lastIterCount_ = 0;
+    // Adds the IPOPT iterations of the last solve attempt (converged or not).
+    auto addIterations = [this]() {
+        try {
+            const casadi::Dict stats = problem_.stats();
+            auto it = stats.find("iter_count");
+            if (it != stats.end()) {
+                lastIterCount_ += static_cast<int>(it->second.to_int());
+            }
+        } catch (const std::exception&) {
+            // no stats available: leave the count as is
+        }
+    };
+    for (int attempt = 0; attempt < kMaxSolveAttempts && !solved; ++attempt) {
         try {
             casadi::OptiSol sol = problem_.solve();
+            addIterations();
             lastX_ = sol.value(x_);
             lastU_ = sol.value(u_);
             lastSlack_ = sol.value(slack_);
             lastLamG_ = sol.value(problem_.lam_g());
             solved = true;
         } catch (const std::exception&) {
+            addIterations();
             casadi::OptiAdvanced debug = problem_.debug();
             problem_.set_initial(x_, debug.value(x_));
             problem_.set_initial(u_, debug.value(u_));
             problem_.set_initial(slack_, debug.value(slack_));
             problem_.set_initial(problem_.lam_g(), debug.value(problem_.lam_g()));
+            // Keep the last iterate: used as the solution if no attempt converges.
+            lastX_ = debug.value(x_);
+            lastU_ = debug.value(u_);
+            lastSlack_ = debug.value(slack_);
+            lastLamG_ = debug.value(problem_.lam_g());
         }
     }
-    if (!solved) {
-        throw std::runtime_error("Warm start failed after 100 attempts");
-    }
+    // If no attempt converged, the last (unconverged) iterate is used, as in
+    // the laopt clients (no exception).
+    lastConverged_ = solved;
 }
 
 void MPCController::runController() {

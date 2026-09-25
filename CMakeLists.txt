@@ -15,6 +15,8 @@ find_package(Eigen3 REQUIRED)
 
 add_library(npmpc
     src_cpp/npmpc/dynamics/integrators/furuta_np.cpp
+    src_cpp/npmpc/dynamics/integrators/midpoint.cpp
+    src_cpp/npmpc/dynamics/furuta.cpp
     src_cpp/npmpc/nps/casadi_utils.cpp
     src_cpp/npmpc/nps/decoder.cpp
     src_cpp/npmpc/nps/NeuralProcess.cpp
@@ -24,6 +26,7 @@ add_library(npmpc
     src_cpp/npmpc/mpc/problem/MPCBase.cpp
     src_cpp/npmpc/mpc/problem/furuta_cost.cpp
     src_cpp/npmpc/mpc/problem/FurutaNPMPC.cpp
+    src_cpp/npmpc/mpc/problem/FurutaMPC.cpp
     src_cpp/npmpc/mpc/solver.cpp
     src_cpp/npmpc/mpc/controller.cpp
     src_cpp/npmpc/mpc/mpc_config_io.cpp
@@ -70,3 +73,11 @@ target_compile_definitions(eval_furuta_mpc PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_S
 add_executable(run_furuta_np_casadi_client src_cpp/tests/run_furuta_np_casadi_client.cpp)
 target_link_libraries(run_furuta_np_casadi_client PRIVATE npmpc)
 target_compile_definitions(run_furuta_np_casadi_client PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+add_executable(eval_furuta_eq_casadi src_cpp/tests/eval_furuta_eq_casadi.cpp)
+target_link_libraries(eval_furuta_eq_casadi PRIVATE npmpc)
+target_compile_definitions(eval_furuta_eq_casadi PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+add_executable(run_furuta_eq_casadi_client src_cpp/tests/run_furuta_eq_casadi_client.cpp)
+target_link_libraries(run_furuta_eq_casadi_client PRIVATE npmpc)
+target_compile_definitions(run_furuta_eq_casadi_client PRIVATE NPMPC_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")

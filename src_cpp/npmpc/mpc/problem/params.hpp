@@ -39,7 +39,8 @@ struct MPCParams {
     int xSize;
     int uSize;
     std::string solver;
-    casadi::DM z;                  // NP latent code (casadi_decoder input)
+    casadi::DM z;                  // NP latent code (casadi_decoder input); empty if not in the config
+    casadi::DM p;                  // analytical model parameters [lp, mp, lr, mr] (FurutaMPC); empty if not in the config
     HardBound hardBound;
     std::vector<double> slackBoundX;
     CostParams cost;

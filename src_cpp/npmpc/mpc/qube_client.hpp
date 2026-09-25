@@ -7,10 +7,21 @@
 
 namespace npmpc::mpc {
 
-// State message received from the Python Qube server: {"t": <time>, "x": [...]}.
+// State message received from the Python Qube server: {"t": <time>, "x": [...]},
+// optionally with "pred": true when the server wants the open-loop prediction
+// of the solve from this state (see run_qube_server.py --pred-count/--pred-period).
 struct QubeState {
     double t;
     std::vector<double> x;
+    bool predictionRequested = false;
+};
+
+// Open-loop MPC prediction of one solve, optionally sent with the input (and
+// logged by the server).
+struct MpcPrediction {
+    double tState;                       // server time `t` of the state the solve started from
+    std::vector<std::vector<double>> x;  // (N+1) predicted states, each of size x_size
+    std::vector<std::vector<double>> u;  // N predicted inputs, each of size u_size
 };
 
 // A minimal TCP client for the length-prefixed JSON wire protocol spoken by
@@ -38,10 +49,12 @@ public:
     // if the connection was closed by the server.
     bool receiveLatestState(QubeState& state, int* skipped = nullptr);
 
-    // Sends the first optimal input as {"u": [...]}, or as
-    // {"u": [...], "solve_ms": <ms>} if the MPC solve time is given (logged by
-    // the server alongside the closed-loop trajectory).
-    void sendInput(const std::vector<double>& u, std::optional<double> solveMs = std::nullopt);
+    // Sends the first optimal input as {"u": [...]}; optionally with the MPC
+    // solve time ("solve_ms": <ms>) and the open-loop prediction
+    // ("t_state": <t>, "x_pred": [[...], ...], "u_pred": [[...], ...]), which the
+    // server logs alongside the closed-loop trajectory.
+    void sendInput(const std::vector<double>& u, std::optional<double> solveMs = std::nullopt,
+                   const MpcPrediction* prediction = nullptr);
 
 private:
     int socketFd_;

@@ -16,8 +16,12 @@ the log and shuts down) and, for its duration: pushes the current state at a fix
 `dt`) as length-prefixed JSON `{"t": <time>, "x": [...]}`, and applies
 whatever `{"u": [...]}` messages it receives to the simulator's torque
 setpoint as soon as they arrive. An input message may also carry the
-client's MPC computation time, `{"u": [...], "solve_ms": <ms>}`, which is
-logged (see --dump).
+client's MPC computation time (`"solve_ms": <ms>`) and its open-loop
+prediction (`"t_state": <t of the state solved from>, "x_pred": [[...], ...],
+"u_pred": [[...], ...]`), which are logged (see --dump). Predictions are only
+logged sparsely (--pred-count, --pred-period): the server flags the state
+messages for which it wants one with `"pred": true` (until one arrives), and
+the client attaches its prediction only to solves from flagged states.
 
 Wire format: each message is a 4-byte big-endian length prefix followed by
 that many bytes of UTF-8 JSON.
@@ -25,7 +29,9 @@ that many bytes of UTF-8 JSON.
 If `--dump` is given (or, absent that, if the MPC config's `save` is true),
 the session's closed-loop log (t, x, u -- one row per state sample sent,
 tagged with whichever torque command was most recently applied; plus
-solve_t, solve_ms -- one entry per input message that reported a solve time) is
+solve_t, solve_ms -- one entry per input message that reported a solve time;
+pred_t, pred_x (k, N+1, x_size), pred_u (k, N, u_size) -- the k <= --pred-count
+logged open-loop predictions) is
 written to `<dump>.npz` under model/ when the client disconnects,
 overwriting any previous dump of that name. `--dump` defaults to the MPC
 config's `save_path`. After shutting down, the server opens the saved dump
@@ -81,13 +87,18 @@ class ClosedLoopLog:
     (single assignments/appends are atomic under the GIL, so no lock is
     needed between the two threads)."""
 
-    def __init__(self):
+    def __init__(self, pred_count: int = 1, pred_period: float = 0.1):
+        self.pred_count = pred_count    # max number of open-loop predictions to log
+        self.pred_period = pred_period  # simulation time [s] between logged predictions
         self.last_u = 0.0
         self.t = []
         self.x = []
         self.u = []
         self.solve_t = []   # arrival time of each input message that carried a solve time
         self.solve_ms = []  # MPC computation time reported by the client [ms]
+        self.pred_t = []    # server time of the state each open-loop prediction started from
+        self.pred_x = []    # open-loop predicted states per solve, (N+1, x_size) each
+        self.pred_u = []    # open-loop predicted inputs per solve, (N, u_size) each
 
     def record(self, t: float, x: list) -> None:
         self.t.append(t)
@@ -98,6 +109,23 @@ class ClosedLoopLog:
         self.solve_t.append(t)
         self.solve_ms.append(solve_ms)
 
+    def prediction_due(self, t: float) -> bool:
+        """Whether an open-loop prediction is wanted for a solve from the state at
+        time t: the first state, then again after each pred_period, pred_count
+        times in total."""
+        if len(self.pred_t) >= self.pred_count:
+            return False
+        return not self.pred_t or t >= self.pred_t[-1] + self.pred_period
+
+    def record_prediction(self, t_state: float, x_pred: list, u_pred: list) -> None:
+        # Drop predictions that are not due (e.g. the client solved from a state
+        # flagged just before the previous prediction arrived).
+        if not self.prediction_due(t_state):
+            return
+        self.pred_t.append(t_state)
+        self.pred_x.append(x_pred)
+        self.pred_u.append(u_pred)
+
     def save(self, path: Path, dt: float, state_period: float, sim_period: float) -> bool:
         """Writes the log to `path`; returns False (and writes nothing) if it is empty."""
         if not self.t:
@@ -105,6 +133,7 @@ class ClosedLoopLog:
         np.savez(path,
                   t=np.array(self.t), x=np.array(self.x), u=np.array(self.u),
                   solve_t=np.array(self.solve_t), solve_ms=np.array(self.solve_ms),
+                  pred_t=np.array(self.pred_t), pred_x=np.array(self.pred_x), pred_u=np.array(self.pred_u),
                   dt=dt, state_period=state_period, sim_period=sim_period)
         print(f'Saved closed-loop log to {path} ({len(self.t)} steps)')
         return True
@@ -124,10 +153,13 @@ def sender_loop(conn, qube, period: float, stop_event: threading.Event, log: Clo
     while not stop_event.is_set():
         state = qube.get_state().tolist()
         t = time.time()
+        msg = {'t': t, 'x': state}
         if log is not None:
             log.record(t, state)
+            if log.prediction_due(t):
+                msg['pred'] = True  # ask the client for the open-loop prediction of this solve
         try:
-            send_msg(conn, {'t': t, 'x': state})
+            send_msg(conn, msg)
         except OSError:
             stop_event.set()
             return
@@ -157,6 +189,8 @@ def receiver_loop(conn, qube, stop_event: threading.Event, log: ClosedLoopLog = 
         solve_ms = msg.get('solve_ms')
         if solve_ms is not None and log is not None:
             log.record_solve(time.time(), float(solve_ms))
+        if 'x_pred' in msg and log is not None:
+            log.record_prediction(float(msg['t_state']), msg['x_pred'], msg['u_pred'])
 
 
 def main() -> None:
@@ -173,6 +207,12 @@ def main() -> None:
                         help='Path prefix (bare filename resolved under model/) to dump the client '
                              'session\'s closed-loop log to, as "<dump>.npz". Defaults to the MPC '
                              'config\'s save_path if its save flag is true, else no dump.')
+    parser.add_argument('--pred-count', type=int, default=1,
+                        help='Number of open-loop MPC predictions to log: 1 = only the one from the '
+                             'initial state (first solve); more = one further prediction after each '
+                             '--pred-period of simulation time, up to this count.')
+    parser.add_argument('--pred-period', type=float, default=0.1,
+                        help='Simulation time [s] between logged open-loop predictions (if --pred-count > 1).')
     parser.add_argument('--no-plot', action='store_true',
                         help='Do not open scripts/plot_cpp_closed_loop.py on the saved dump.')
     args = parser.parse_args()
@@ -205,7 +245,7 @@ def main() -> None:
         conn, addr = server.accept()
         print(f'Client connected: {addr}')
         stop_event = threading.Event()
-        log = ClosedLoopLog() if dump_prefix else None
+        log = ClosedLoopLog(args.pred_count, args.pred_period) if dump_prefix else None
         t_send = threading.Thread(target=sender_loop, args=(conn, qube, state_period, stop_event, log), daemon=True)
         t_recv = threading.Thread(target=receiver_loop, args=(conn, qube, stop_event, log), daemon=True)
         t_send.start()

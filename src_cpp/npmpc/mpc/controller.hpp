@@ -27,14 +27,27 @@ public:
     // retries with the last iterate on solve failure, as in Python.
     void warmStart(const casadi::DM& x0);
 
+    // Warm-up before the closed loop starts: one cold-start solve from x0, so
+    // that the one-time setup of the first solve (Opti builds the NLP solver,
+    // CasADi generates the derivative functions, IPOPT initializes) happens
+    // here. The solution is then discarded, so the next warmStart cold-starts
+    // as without prepare(). lastConverged()/lastIterCount() report this solve.
+    void prepare(const casadi::DM& x0);
+
     [[noreturn]] void runController();
 
     const casadi::DM& lastX() const { return lastX_; }
     const casadi::DM& lastU() const { return lastU_; }
     const casadi::DM& lastSlack() const { return lastSlack_; }
 
+    // Of the last warmStart: whether a solve attempt converged, and the IPOPT
+    // iterations summed over all its attempts.
+    bool lastConverged() const { return lastConverged_; }
+    int lastIterCount() const { return lastIterCount_; }
+
 private:
     void buildOptimization();
+    void setColdStartGuess(const casadi::DM& x0);
     void solveWithRetry();
 
     problem::MPCBase& mpc_;
@@ -42,6 +55,8 @@ private:
     casadi::Opti problem_;
     casadi::MX x_, u_, slack_, x0Param_;
     casadi::DM lastX_, lastU_, lastSlack_, lastLamG_;
+    bool lastConverged_ = false;
+    int lastIterCount_ = 0;
 };
 
 } // namespace npmpc::mpc

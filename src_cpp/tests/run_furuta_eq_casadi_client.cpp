@@ -1,17 +1,19 @@
 // Connects to the Python Qube simulator server (scripts/run_qube_server.py)
-// and drives it in closed loop with the C++ NP-dynamics MPC: receive the
-// current state, solve, send back the first optimal input, repeat.
+// and drives it in closed loop with the C++ equation-based CasADi MPC
+// (FurutaMPC: analytical Furuta ODE); otherwise the same as
+// run_furuta_np_casadi_client.cpp (NP dynamics): receive the current state,
+// solve, send back the first optimal input, repeat.
 #include <chrono>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 #include <casadi/casadi.hpp>
 
 #include "npmpc/mpc/mpc_config_io.hpp"
 #include "npmpc/mpc/mpc_service.hpp"
-#include "npmpc/mpc/problem/FurutaNPMPC.hpp"
+#include "npmpc/mpc/problem/FurutaMPC.hpp"
 #include "npmpc/mpc/qube_client.hpp"
-#include "npmpc/nps/weights_io.hpp"
 
 #ifndef NPMPC_PROJECT_ROOT
 #define NPMPC_PROJECT_ROOT "."
@@ -20,15 +22,16 @@
 int main(int argc, char** argv) {
     const std::string host = argc > 1 ? argv[1] : "127.0.0.1";
     const int port = argc > 2 ? std::stoi(argv[2]) : 56123;
-    const std::string weightsPath =
-        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/np_weights.yaml";
     const std::string mpcConfigPath =
-        argc > 4 ? argv[4] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config.yaml";
+        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config_equation.yaml";
 
-    npmpc::nps::NeuralProcess np = npmpc::nps::loadNeuralProcessFromYaml(weightsPath);
     npmpc::mpc::problem::MPCParams params = npmpc::mpc::loadMPCParamsFromYaml(mpcConfigPath);
+    if (params.p.is_empty()) {
+        throw std::runtime_error("No plant parameters `p` in " + mpcConfigPath +
+                                 " (export it with scripts/export_mpc_config.py --method equation)");
+    }
 
-    npmpc::mpc::problem::FurutaNPMPC mpc(&np, params.z, params.cost);
+    npmpc::mpc::problem::FurutaMPC mpc(params.p, params.cost);
     npmpc::mpc::MPCService service(mpc, params);
 
     // Warm-up solve before connecting: the one-time setup of the first solve
@@ -51,7 +54,7 @@ int main(int argc, char** argv) {
     // rate, so always solve from the newest one (older queued states are
     // discarded) and start the next solve right after sending.
     const double runTime = params.simSteps * params.dt;
-    std::cout << "Connected. Running closed loop for " << runTime << " s.\n";
+    std::cout << "Connected. Running closed loop (equation MPC, CasADi) for " << runTime << " s.\n";
 
     npmpc::mpc::QubeState state;
     double tStart = 0.0;
@@ -87,7 +90,7 @@ int main(int argc, char** argv) {
 
         std::cout << "step " << step << " | t=" << state.t - tStart << " | skipped " << skipped
                   << " | " << solveMs << " ms | " << (service.converged() ? "converged" : "NOT converged")
-                  << " (" << service.iterCount() << " iter) | x0=" << x0 << " | u0=" << u0 << "\n";
+                  << " (" << service.iterCount() << " IPOPT iter) | x0=" << x0 << " | u0=" << u0 << "\n";
     }
 
     return 0;

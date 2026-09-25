@@ -33,7 +33,15 @@ problem::MPCParams loadMPCParamsFromYaml(const std::string& path) {
     params.xSize = root["x_size"].as<int>();
     params.uSize = root["u_size"].as<int>();
     params.solver = root["solver"].as<std::string>();
-    params.z = casadi::DM(root["z"].as<std::vector<double>>());
+    // z (NP config, mpc_config.yaml) and p (equation config,
+    // mpc_config_equation.yaml) are each optional; the MPC problem that needs
+    // one checks for it.
+    if (root["z"]) {
+        params.z = casadi::DM(root["z"].as<std::vector<double>>());
+    }
+    if (root["p"]) {
+        params.p = casadi::DM(root["p"].as<std::vector<double>>());
+    }
 
     params.hardBound.x = readBounds(root["hard_bound"]["x"]);
     params.hardBound.u = readBounds(root["hard_bound"]["u"]);

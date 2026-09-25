@@ -13,6 +13,8 @@
 #include "laopt/solvers/piqp_interface.hpp"
 #include "laopt/solvers/sqp_solver.hpp"
 
+#include "npmpc/mpc/qube_client.hpp"
+
 namespace npmpc::mpc::furuta_laopt {
 
 enum class SolverType { IPOPT, SQP_PIQP };
@@ -43,7 +45,7 @@ void configureSolver(SolverT& solver)
     }
     else
     {
-        solver.settings().max_iter = 4; // laopt defaults otherwise (eps_prim 1e-6, eps_dual 1e-4, Gauss-Newton Hessian)
+        solver.settings().max_iter = 15; // laopt defaults otherwise (eps_prim 1e-6, eps_dual 1e-4, Gauss-Newton Hessian)
         // solver.settings().hessian_approximation = laopt::hessian_approximation_t::EXACT;
         // solver.settings().regularize_hessian = true;
         // solver.settings().globalization_strategy = laopt::globalization_t::LINE_SEARCH_L1;
@@ -62,8 +64,12 @@ SolveResult solveOnce(SolverT& solver)
 {
     const auto status = solver.solve();
     if constexpr (kIsIpopt<SolverT>) {
-        return {status == Ipopt::Solve_Succeeded || status == Ipopt::Solved_To_Acceptable_Level,
-                SolverT::ipopt_status_text(status)};
+        std::string text = SolverT::ipopt_status_text(status);
+        const Ipopt::SmartPtr<Ipopt::SolveStatistics> stats = solver.ipopt_application->Statistics();
+        if (Ipopt::IsValid(stats)) {
+            text += " (" + std::to_string(stats->IterationCount()) + " IPOPT iter)";
+        }
+        return {status == Ipopt::Solve_Succeeded || status == Ipopt::Solved_To_Acceptable_Level, text};
     } else {
         std::string text;
         switch (status.status) {
@@ -78,6 +84,22 @@ SolveResult solveOnce(SolverT& solver)
         text += " (" + std::to_string(status.iter) + " SQP iter, " + std::to_string(status.qp_iter) + " QP iter)";
         return {status.status == laopt::sqp_status_t::SOLVED, text};
     }
+}
+
+// Open-loop prediction of the last solve (for logging via QubeClient::sendInput),
+// from a MultipleShooting-style transcription (get_X_opt: (NX, N+1), get_U_opt: (NU, N));
+// tState is the server time of the state the solve started from.
+template<typename Transcription>
+npmpc::mpc::MpcPrediction predictionOf(const Transcription& transcription, double tState)
+{
+    auto toRows = [](const auto& m) {
+        std::vector<std::vector<double>> rows(static_cast<size_t>(m.cols()));
+        for (Eigen::Index k = 0; k < m.cols(); ++k) {
+            rows[static_cast<size_t>(k)].assign(m.col(k).data(), m.col(k).data() + m.rows());
+        }
+        return rows;
+    };
+    return {tState, toRows(transcription.get_X_opt()), toRows(transcription.get_U_opt())};
 }
 
 } // namespace npmpc::mpc::furuta_laopt

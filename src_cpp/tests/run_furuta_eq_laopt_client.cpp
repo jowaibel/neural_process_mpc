@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -50,6 +51,12 @@ using Solver = npmpc::mpc::furuta_laopt::SolverFor<kSolver, OptProblem>;
 // Cap on solve() calls for the initial solve (repeated until converged before
 // the first input is sent).
 constexpr int kMaxInitialSolves = 500;
+
+// Artificial computation delay, to compare with slower MPCs (e.g. CasADi/IPOPT):
+// the input is sent no earlier than kMinSolveMs after the solve started
+// (waiting if the solve was faster). 0 = send as soon as the solve is done.
+// The logged solve_ms stays the actual solver time.
+constexpr double kMinSolveMs = 5.0;
 
 constexpr int NXP = Ocp::NX;                            // state size
 using StateTrajectory = Transcription::StateTrajectory; // (NX, N+1)
@@ -145,10 +152,22 @@ int main(int argc, char** argv)
                       << duration<double, std::milli>(steady_clock::now() - tSolve0).count() << " ms\n";
         }
         const double solveMs = duration<double, std::milli>(steady_clock::now() - tSolve0).count();
+        if (solveMs < kMinSolveMs) {
+            std::this_thread::sleep_until(tSolve0 + duration<double, std::milli>(kMinSolveMs));
+        }
+        const double sendMs = duration<double, std::milli>(steady_clock::now() - tSolve0).count();
 
         // First input, sent whether or not the solver converged.
         const Ocp::Input u0 = transcription->get_U_opt().col(0);
-        client.sendInput(std::vector<double>(u0.data(), u0.data() + u0.size()), solveMs);
+        const std::vector<double> uOut(u0.data(), u0.data() + u0.size());
+        if (state.predictionRequested) {
+            // Open-loop prediction of this solve, only when the server asks for it (logging).
+            const npmpc::mpc::MpcPrediction prediction =
+                npmpc::mpc::furuta_laopt::predictionOf(*transcription, state.t);
+            client.sendInput(uOut, solveMs, &prediction);
+        } else {
+            client.sendInput(uOut, solveMs);
+        }
 
         ++nSolves;
         nConverged += result.converged ? 1 : 0;
@@ -157,7 +176,7 @@ int main(int argc, char** argv)
         solveMsMax = std::max(solveMsMax, solveMs);
 
         std::cout << "solve " << nSolves << " | t=" << state.t - tStart << " | skipped " << skipped
-                  << " | " << solveMs << " ms | " << result.status
+                  << " | " << solveMs << " ms (sent after " << sendMs << " ms) | " << result.status
                   << " | x0=" << x.transpose() << " | u0=" << u0.transpose() << "\n";
     }
 
