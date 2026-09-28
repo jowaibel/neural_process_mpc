@@ -5,15 +5,25 @@
 namespace npmpc::mpc {
 
 void configureSolver(casadi::Opti& problem, const std::string& solverName) {
-    if (solverName == "ipopt") {
+    if (solverName == "ipopt")
+    {
+        casadi::Dict jit_options = {{"flags",   "-O3"},
+                                    {"verbose", true}};
         problem.solver("ipopt", {
             {"ipopt.max_iter", 50},
             {"ipopt.tol", 1e-6},
             {"ipopt.print_level", 0},
             {"ipopt.sb", "yes"},
             {"print_time", 0},
+
+            {"expand", false},
+            {"jit", false},
+            {"compiler", "shell"},
+            {"jit_options", jit_options}
         });
-    } else if (solverName == "sqp") {
+    }
+    else if (solverName == "sqp")
+    {
         problem.solver("sqpmethod", {
             {"qpsol", "qrqp"},
             {"jit", true},
@@ -32,7 +42,9 @@ void configureSolver(casadi::Opti& problem, const std::string& solverName) {
             {"qpsol_options.error_on_fail", false},
             {"expand", false},
         });
-    } else {
+    }
+    else
+    {
         throw std::invalid_argument("Solver '" + solverName + "' not implemented");
     }
 }
