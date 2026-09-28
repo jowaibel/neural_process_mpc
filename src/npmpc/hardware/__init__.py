@@ -5,7 +5,15 @@ from npmpc.hardware.QubeSimulator import QubeSimulator
 
 HARDWARE_REGISTRY = {
     'sim': QubeSimulator,
+    'servo': None,
 }
+
+# QubeServo2 requires the Quanser SDK — register only if available
+try:
+    from npmpc.hardware.QubeServo2 import QubeServo2
+    HARDWARE_REGISTRY['servo'] = QubeServo2
+except ImportError:
+    pass
 
 def create_hardware(params: dict):
     root = get_project_root()

@@ -196,11 +196,16 @@ def receiver_loop(conn, qube, stop_event: threading.Event, log: ClosedLoopLog = 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mpc-config', default=str(PROJECT_ROOT / 'model/furuta_mpc.json'))
+    parser.add_argument('--target', choices=['sim', 'servo'], default='sim',
+                        help='"sim" runs the software Qube simulator; "servo" drives the real '
+                             'Quanser Qube-Servo2 over its USB HIL interface (requires the '
+                             'Quanser Python SDK).')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=56123)
     parser.add_argument('--sim-rate', type=float, default=None,
-                        help='Rate [Hz] at which the simulator integrates the dynamics '
-                             '(default: the simulator\'s own rate, QubeBase.frequency = 4000 Hz).')
+                        help='Rate [Hz] of the hardware loop: the simulator\'s integration rate, '
+                             'or the real servo\'s current-controller polling rate '
+                             '(default: QubeBase.frequency = 4000 Hz either way).')
     parser.add_argument('--state-rate', type=float, default=500.0,
                         help='Rate [Hz] at which the state is sent to the client.')
     parser.add_argument('--dump', default=None,
@@ -223,7 +228,7 @@ def main() -> None:
     furuta_mpc = json.loads(Path(args.mpc_config).read_text())
     dt = furuta_mpc['dt']  # MPC model/prediction step; only recorded in the dump
     state_period = 1.0 / args.state_rate
-    qube = create_hardware({'target': 'sim', 'p': furuta_mpc['p'], 'frequency': args.sim_rate})
+    qube = create_hardware({'target': args.target, 'p': furuta_mpc['p'], 'frequency': args.sim_rate})
     sim_rate = qube.frequency  # the rate actually used (class default if --sim-rate not given)
     sim_period = 1.0 / sim_rate
 
