@@ -107,7 +107,7 @@ Then run the C++ MPC controller (assuming it is built in the `build/` directory)
 ### Plot a Previously Recorded Experiment
 Run the following plotting script:
 ```bash
-python scripts/plot_cpp_closed_loop.py model/dump_name.npz
+python scripts/plot_cpp_closed_loop.py logs/dump_name.npz
 ```
 
 ## Citation
