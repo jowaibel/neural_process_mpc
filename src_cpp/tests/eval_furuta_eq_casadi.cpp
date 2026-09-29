@@ -1,7 +1,7 @@
 // Validates the C++ equation-based CasADi MPC (FurutaMPC + MPCController)
 // against the Python FurutaMPC solution (the same file as
 // eval_furuta_eq_laopt.cpp, written by
-//   scripts/eval_furuta_mpc.py --method equation --dump model/eq_python_solution.yaml
+//   scripts/eval_furuta_mpc.py --method equation --dump logs/eq_python_solution.yaml
 // from the same config as model/mpc_config_equation.yaml):
 //  1. Cost: furutaCost at the Python solution must equal Python's objective.
 //  2. Solve: MPCController::warmStart for the Python solution's x0 (same cold
@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     const std::string mpcConfigPath =
         argc > 1 ? argv[1] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config_equation.yaml";
     const std::string pythonSolutionPath =
-        argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/model/eq_python_solution.yaml";
+        argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/logs/eq_python_solution.yaml";
 
     npmpc::mpc::problem::MPCParams params = npmpc::mpc::loadMPCParamsFromYaml(mpcConfigPath);
     if (params.p.is_empty()) {

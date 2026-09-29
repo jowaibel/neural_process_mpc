@@ -4,7 +4,7 @@ import time
 import torch
 
 from npmpc.hardware.QubeBase import QubeBase
-from npmpc.utils.utils import resolve_path
+from npmpc.utils.utils import resolve_log_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class DataRecorder:
         logger.info(f"Experiment finished in {time.time() - t_start:.1f}s")
 
         if self.params.get('save_experiment', False):
-            path = resolve_path(self.params['save_name'])
+            path = resolve_log_path(self.params['save_name'])
             torch.save(experiment, path)
             logger.info(f"Saved experiment to {path}")
 
@@ -74,7 +74,7 @@ class DataRecorder:
 
     @classmethod
     def load_saved(cls, name: str) -> list:
-        return torch.load(resolve_path(name), weights_only=False)
+        return torch.load(resolve_log_path(name), weights_only=False)
     
     
     def impulse_experiment(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -14,8 +14,8 @@ from matplotlib.widgets import Slider, Button
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', nargs='?',
-                        default='mpc_run.npz',
-                        help='Path to the .npz file written by FurutaRuntime._dump_data')
+                        default='logs/mpc_run.npz',
+                        help='Path to the .npz file written by FurutaRuntime._dump_data (under logs/ by default)')
     args = parser.parse_args()
 
     data = np.load(args.path, allow_pickle=True)

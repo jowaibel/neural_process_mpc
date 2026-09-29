@@ -30,9 +30,19 @@ def resolve_path(value):
     return value
 
 
+def resolve_log_path(value):
+    """Resolve a bare log/dump filename to <project_root>/logs/<value>, creating that
+    directory if needed. A value that already contains a path separator (relative or
+    absolute) is returned unchanged."""
+    if isinstance(value, str) and value and '/' not in value:
+        log_dir = get_project_root() / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return str(log_dir / value)
+    return value
+
+
 def setup_logging(debug=False):
-    base = _FOLDER if _FOLDER is not None else get_project_root()
-    log_dir = base / 'logs'
+    log_dir = get_project_root() / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     os.environ[_LOG_ENV] = str(log_file)

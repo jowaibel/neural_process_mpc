@@ -32,7 +32,7 @@ tagged with whichever torque command was most recently applied; plus
 solve_t, solve_ms -- one entry per input message that reported a solve time;
 pred_t, pred_x (k, N+1, x_size), pred_u (k, N, u_size) -- the k <= --pred-count
 logged open-loop predictions) is
-written to `<dump>.npz` under model/ when the client disconnects,
+written to `<dump>.npz` under logs/ (created if missing) when the client disconnects,
 overwriting any previous dump of that name. `--dump` defaults to the MPC
 config's `save_path`. After shutting down, the server opens the saved dump
 with scripts/plot_cpp_closed_loop.py (unless --no-plot).
@@ -209,9 +209,9 @@ def main() -> None:
     parser.add_argument('--state-rate', type=float, default=500.0,
                         help='Rate [Hz] at which the state is sent to the client.')
     parser.add_argument('--dump', default=None,
-                        help='Path prefix (bare filename resolved under model/) to dump the client '
-                             'session\'s closed-loop log to, as "<dump>.npz". Defaults to the MPC '
-                             'config\'s save_path if its save flag is true, else no dump.')
+                        help='Path prefix (bare filename resolved under logs/, created if missing) to '
+                             'dump the client session\'s closed-loop log to, as "<dump>.npz". Defaults '
+                             'to the MPC config\'s save_path if its save flag is true, else no dump.')
     parser.add_argument('--pred-count', type=int, default=1,
                         help='Number of open-loop MPC predictions to log: 1 = only the one from the '
                              'initial state (first solve); more = one further prediction after each '
@@ -260,7 +260,9 @@ def main() -> None:
         conn.close()
         print('Client disconnected; stopping the server.')
         if log is not None:
-            dump_path = PROJECT_ROOT / 'model' / f'{dump_prefix}.npz'
+            log_dir = PROJECT_ROOT / 'logs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            dump_path = log_dir / f'{dump_prefix}.npz'
             if log.save(dump_path, dt, state_period, sim_period):
                 saved_path = dump_path
     except KeyboardInterrupt:

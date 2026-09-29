@@ -1,7 +1,7 @@
 // Validates the C++ NP CasADi MPC (FurutaNPMPC + MPCController) against the
 // Python FurutaNPMPC solution (the same file as eval_furuta_np_laopt.cpp,
 // written by
-//   scripts/eval_furuta_mpc.py --method neural --z <z> --dump model/np_python_solution.yaml
+//   scripts/eval_furuta_mpc.py --method neural --z <z> --dump logs/np_python_solution.yaml
 // with the same z and config as model/mpc_config.yaml), the NP counterpart of
 // eval_furuta_eq_casadi.cpp:
 //  1. Cost: furutaCost at the Python solution must equal Python's objective.
@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
     const std::string mpcConfigPath =
         argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config.yaml";
     const std::string pythonSolutionPath =
-        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/model/np_python_solution.yaml";
+        argc > 3 ? argv[3] : std::string(NPMPC_PROJECT_ROOT) + "/logs/np_python_solution.yaml";
 
     npmpc::nps::NeuralProcess np = npmpc::nps::loadNeuralProcessFromYaml(weightsPath);
     npmpc::mpc::problem::MPCParams params = npmpc::mpc::loadMPCParamsFromYaml(mpcConfigPath);

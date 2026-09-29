@@ -9,7 +9,7 @@ from npmpc.mpc.runtime import RuntimeBase
 from npmpc.mpc.problem.furuta_cost import stage_cost, interstage_cost
 from npmpc.dynamics.furuta import FurutaDynamics
 from npmpc.dynamics.integrators.midpoint import MidpointIntegration
-from npmpc.utils.utils import resolve_path
+from npmpc.utils.utils import resolve_log_path
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,6 @@ class FurutaRuntime(RuntimeBase):
             if self.params.get('method') == 'neural' and self.mpc.z is not None:
                 dump["x_np"] = self._compute_np_open_loop()
                 dump["x_mc"] = self._compute_np_montecarlo()
-        np.savez(resolve_path(self.params['save_path']), **dump)
+        np.savez(resolve_log_path(self.params['save_path']), **dump)
         if verbose:
-            logger.info(f"Saved to {resolve_path(self.params['save_path'])}")
+            logger.info(f"Saved to {resolve_log_path(self.params['save_path'])}")

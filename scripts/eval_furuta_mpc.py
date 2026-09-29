@@ -9,7 +9,7 @@ the original Python implementation: the printed x/u trajectories should
 match src_cpp/tests/eval_furuta_mpc.cpp's output to solver tolerance.
 
 --method equation: the analytical Furuta ODE (FurutaMPC). With --dump, the
-solution (x, u, objective) is written to YAML (e.g. model/eq_python_solution.yaml),
+solution (x, u, objective) is written to YAML (e.g. logs/eq_python_solution.yaml),
 against which src_cpp/tests/eval_furuta_eq_laopt.cpp and eval_furuta_eq_casadi.cpp
 check their solutions (they solve from its x0; --x0 overrides the config's
 initial state).
@@ -68,6 +68,7 @@ def eval_furuta_mpc(np_config_path: str, mpc_config_path: str, z: list,
         if dump_path is not None:
             x_rows = '\n'.join('  - ' + _flow_list(row) for row in x)
             u_rows = '\n'.join('  - ' + _flow_list(row) for row in u)
+            Path(dump_path).parent.mkdir(parents=True, exist_ok=True)
             Path(dump_path).write_text(
                 f"method: {method}\n"
                 f"x0: {_flow_list(x0.numpy())}\n"
@@ -87,7 +88,9 @@ if __name__ == '__main__':
     parser.add_argument('--mpc-config', default=str(PROJECT_ROOT / 'model/furuta_mpc.json'))
     parser.add_argument('--method', choices=['neural', 'equation'], default='neural')
     parser.add_argument('--z', type=float, nargs='+', default=[0.0, 0.0, 0.0, 0.0])
-    parser.add_argument('--dump', default=None, help='Write the solution (x, u, objective) to this YAML file.')
+    parser.add_argument('--dump', default=None,
+                        help='Write the solution (x, u, objective) to this YAML file '
+                             '(e.g. logs/eq_python_solution.yaml; parent dir created if missing).')
     parser.add_argument('--x0', type=float, nargs=4, default=None,
                         help='Initial state [theta, phi, theta_dot, phi_dot] (default: experiment_options.x0 of the config).')
     args = parser.parse_args()

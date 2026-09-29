@@ -1,6 +1,6 @@
 // Validates the equation-based laopt OCP (FurutaEqOcpEigen.hpp) against the
 // Python FurutaMPC solution (YAML written by
-//   scripts/eval_furuta_mpc.py --method equation --dump model/eq_python_solution.yaml
+//   scripts/eval_furuta_mpc.py --method equation --dump logs/eq_python_solution.yaml
 // from the same config as model/mpc_config_equation.yaml, written by
 //   scripts/export_mpc_config.py --method equation):
 //  1. Dynamics: the implicit-midpoint residual of the Furuta ODE port on the
@@ -159,7 +159,7 @@ int main(int argc, char** argv)
     const std::string mpcConfigPath =
         argc > 1 ? argv[1] : std::string(NPMPC_PROJECT_ROOT) + "/model/mpc_config_equation.yaml";
     const std::string pythonSolutionPath =
-        argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/model/eq_python_solution.yaml";
+        argc > 2 ? argv[2] : std::string(NPMPC_PROJECT_ROOT) + "/logs/eq_python_solution.yaml";
 
     const PythonSolution py = loadPythonSolution(pythonSolutionPath);
     Ocp ocp(mpcConfigPath);

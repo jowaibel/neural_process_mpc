@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def display_path(path: str) -> str:
-    """`path` relative to the project root (e.g. model/experiment_x.npz), or as given if outside it."""
+    """`path` relative to the project root (e.g. logs/experiment_x.npz), or as given if outside it."""
     try:
         return str(Path(path).resolve().relative_to(PROJECT_ROOT))
     except ValueError:
