@@ -73,12 +73,41 @@ exact `python -m npmpc.main` command it runs.
 ./scripts/deploy_cnp.sh       # closed-loop MPC swing-up on the simulated pendulum
 ```
 
-### Reproduce the paper figures
+### Reproduce the Paper Figures
 
 ```bash
 python scripts/plot_furuta_np_adaptation.py             # context-adaptation diagnostics
 python scripts/plot_furuta_np_mpc.py                    # nominal vs NP-MPC comparison
 python scripts/plot_furuta_np_adaptation_closedloop.py  # closed-loop cost vs context size
+```
+
+## Additional Usage: C++ MPC Controllers
+### Configuration
+To run any C++ MPC, first run the original Python NP adaptation / equation-based parameter identification 
+with the above `deploy_cnp.sh`. The script will output the results of the NP adaptation / equation-based parameter identification.
+
+For a particular simulated or physical pendulum:
+- Copy the latent variable vector z into `model/mpc_config.yaml`.
+- Copy the identified parameter vector p into `model/mpc_config_equation.yaml`.
+
+### Run an MPC Controller in Closed-Loop With a Simulated or Physical Pendulum
+First run the Qube server. Optionally specify the name under which the experiment is logged (`--dump`), 
+how many (open-loop) MPC predicted trajectories shall be stored (`--pred-count`), and at which period (`--pred-period`):
+```bash
+python scripts/run_qube_server.py --dump dump_name --pred-count 6 --pred-period 0.1
+```
+Then run the C++ MPC controller (assuming it is built in the `build/` directory):
+```bash
+./build/run_furuta_eq_casadi_client   # CasADi (C++) with IPOPT solver: equation-based NMPC
+./build/run_furuta_np_casadi_client   # CasADi (C++) with IPOPT solver: NP-MPC
+
+./build/run_furuta_eq_laopt_client    # laOPT with SQP/PIQP solver: equation-based NMPC, 
+./build/run_furuta_np_laopt_client    # laOPT with SQP/PIQP solver: NP-MPC
+```
+### Plot a Previously Recorded Experiment
+Run the following plotting script:
+```bash
+python scripts/plot_cpp_closed_loop.py model/dump_name.npz
 ```
 
 ## Citation
